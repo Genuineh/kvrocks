@@ -76,6 +76,18 @@ func Populate(t testing.TB, rdb *redis.Client, prefix string, n, size int) {
 	require.NoError(t, err)
 }
 
+func PopulateForCluster(t testing.TB, rdb *redis.ClusterClient, prefix string, n, size int) {
+	ctx := context.Background()
+	p := rdb.Pipeline()
+
+	for i := 0; i < n; i++ {
+		p.Do(ctx, "SET", fmt.Sprintf("%s%d", prefix, i), strings.Repeat("A", size))
+	}
+
+	_, err := p.Exec(ctx)
+	require.NoError(t, err)
+}
+
 func SimpleTCPProxy(ctx context.Context, t testing.TB, to string, slowdown bool) uint64 {
 	addr, err := findFreePort()
 	if err != nil {
