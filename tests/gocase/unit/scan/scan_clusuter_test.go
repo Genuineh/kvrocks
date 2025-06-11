@@ -17,12 +17,11 @@
  * under the License.
  */
 
-package scan_cluster
+package scan
 
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -33,45 +32,21 @@ import (
 	"golang.org/x/exp/slices"
 )
 
-func TestScanEmptyKey(t *testing.T) {
-	// srv := util.StartServer(t, map[string]string{"cluster-enabled": "yes"})
-	// defer srv.Close()
+func TestScanEmptyKeyInCluster(t *testing.T) {
+	ctx := context.Background()
+	servers := startClusterServer(t, ctx, map[string]string{})
+	defer func() {
+		for _, s := range servers {
+			s.Close()
+		}
+	}()
 
-	var ctx = context.Background()
-	masterSrv := util.StartServer(t, map[string]string{"cluster-enabled": "yes"})
-	defer func() { masterSrv.Close() }()
-	masterClient := masterSrv.NewClient()
-	defer func() { require.NoError(t, masterClient.Close()) }()
-	masterNodeID := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx00"
-	require.NoError(t, masterClient.Do(ctx, "clusterx", "SETNODEID", masterNodeID).Err())
-
-	replicaSrv := util.StartServer(t, map[string]string{
-		"cluster-enabled": "yes",
-		// enabled the replication namespace to reproduce the issue #2214
-		"repl-namespace-enabled": "yes",
-	})
-	defer func() { replicaSrv.Close() }()
-	replicaClient := replicaSrv.NewClient()
-	// allow to run the read-only command in the replica
-	require.NoError(t, replicaClient.ReadOnly(ctx).Err())
-	defer func() { require.NoError(t, replicaClient.Close()) }()
-	replicaNodeID := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx01"
-	require.NoError(t, replicaClient.Do(ctx, "clusterx", "SETNODEID", replicaNodeID).Err())
-
-	clusterNodes := fmt.Sprintf("%s 127.0.0.1 %d master - 0-16383", masterNodeID, masterSrv.Port())
-	clusterNodes = fmt.Sprintf("%s\n%s 127.0.0.1 %d slave %s", clusterNodes, replicaNodeID, replicaSrv.Port(), masterNodeID)
-
-	require.NoError(t, masterClient.Do(ctx, "clusterx", "SETNODES", clusterNodes, "1").Err())
-	require.NoError(t, replicaClient.Do(ctx, "clusterx", "SETNODES", clusterNodes, "1").Err())
-
-	// ctx := context.Background()
-	rdb := masterSrv.NewClusterClient()
-
+	rdb := initClient(servers)
 	defer func() { require.NoError(t, rdb.Close()) }()
 
 	require.NoError(t, rdb.Set(ctx, "", "empty", 0).Err())
 	require.NoError(t, rdb.Set(ctx, "foo", "bar", 0).Err())
-	require.Equal(t, []string{"", "foo"}, scanAll(t, rdb))
+	require.Equal(t, []string{"", "foo"}, scanAllNodes(t, rdb))
 
 	require.NoError(t, rdb.SAdd(ctx, "sadd_key", "", "fab", "fiz", "foobar").Err())
 	keys, _, err := rdb.SScan(ctx, "sadd_key", 0, "*", 10000).Result()
@@ -81,157 +56,134 @@ func TestScanEmptyKey(t *testing.T) {
 	require.Equal(t, []string{"", "fab", "fiz", "foobar"}, keys)
 }
 
-func TestScanWithNumberCursor(t *testing.T) {
+func TestScanWithNumberCursorInCluster(t *testing.T) {
 	ctx := context.Background()
-	masterSrv := util.StartServer(t, map[string]string{"cluster-enabled": "yes"})
-	defer func() { masterSrv.Close() }()
-	masterClient := masterSrv.NewClient()
-	defer func() { require.NoError(t, masterClient.Close()) }()
-	masterNodeID := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx00"
-	require.NoError(t, masterClient.Do(ctx, "clusterx", "SETNODEID", masterNodeID).Err())
+	servers := startClusterServer(t, ctx, map[string]string{})
+	defer func() {
+		for _, s := range servers {
+			s.Close()
+		}
+	}()
 
-	replicaSrv := util.StartServer(t, map[string]string{
-		"cluster-enabled": "yes",
-		// enabled the replication namespace to reproduce the issue #2214
-		"repl-namespace-enabled": "yes",
-	})
-	defer func() { replicaSrv.Close() }()
-	replicaClient := replicaSrv.NewClient()
-	// allow to run the read-only command in the replica
-	require.NoError(t, replicaClient.ReadOnly(ctx).Err())
-	defer func() { require.NoError(t, replicaClient.Close()) }()
-	replicaNodeID := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx01"
-	require.NoError(t, replicaClient.Do(ctx, "clusterx", "SETNODEID", replicaNodeID).Err())
-
-	clusterNodes := fmt.Sprintf("%s 127.0.0.1 %d master - 0-16383", masterNodeID, masterSrv.Port())
-	clusterNodes = fmt.Sprintf("%s\n%s 127.0.0.1 %d slave %s", clusterNodes, replicaNodeID, replicaSrv.Port(), masterNodeID)
-
-	require.NoError(t, masterClient.Do(ctx, "clusterx", "SETNODES", clusterNodes, "1").Err())
-	require.NoError(t, replicaClient.Do(ctx, "clusterx", "SETNODES", clusterNodes, "1").Err())
-
-	rdb := masterSrv.NewClusterClient()
+	rdb := initClient(servers)
 	defer func() { require.NoError(t, rdb.Close()) }()
+
 	require.NoError(t, rdb.ConfigSet(ctx, "redis-cursor-compatible", "yes").Err())
-	ScanTest(t, rdb, ctx)
+	ScanTestInCluster(t, rdb, ctx)
 }
 
-func TestScanWithStringCursor(t *testing.T) {
+func TestScanWithStringCursorInCluster(t *testing.T) {
 	var ctx = context.Background()
-	masterSrv := util.StartServer(t, map[string]string{"cluster-enabled": "yes"})
-	defer func() { masterSrv.Close() }()
-	masterClient := masterSrv.NewClient()
-	defer func() { require.NoError(t, masterClient.Close()) }()
-	masterNodeID := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx00"
-	require.NoError(t, masterClient.Do(ctx, "clusterx", "SETNODEID", masterNodeID).Err())
-
-	replicaSrv := util.StartServer(t, map[string]string{
-		"cluster-enabled": "yes",
-		// enabled the replication namespace to reproduce the issue #2214
-		"repl-namespace-enabled": "yes",
-	})
-	defer func() { replicaSrv.Close() }()
-	replicaClient := replicaSrv.NewClient()
-	// allow to run the read-only command in the replica
-	require.NoError(t, replicaClient.ReadOnly(ctx).Err())
-	defer func() { require.NoError(t, replicaClient.Close()) }()
-	replicaNodeID := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx01"
-	require.NoError(t, replicaClient.Do(ctx, "clusterx", "SETNODEID", replicaNodeID).Err())
-
-	clusterNodes := fmt.Sprintf("%s 127.0.0.1 %d master - 0-16383", masterNodeID, masterSrv.Port())
-	clusterNodes = fmt.Sprintf("%s\n%s 127.0.0.1 %d slave %s", clusterNodes, replicaNodeID, replicaSrv.Port(), masterNodeID)
-
-	require.NoError(t, masterClient.Do(ctx, "clusterx", "SETNODES", clusterNodes, "1").Err())
-	require.NoError(t, replicaClient.Do(ctx, "clusterx", "SETNODES", clusterNodes, "1").Err())
-
-	rdb := masterSrv.NewClusterClient()
+	servers := startClusterServer(t, ctx, map[string]string{})
+	defer func() {
+		for _, s := range servers {
+			s.Close()
+		}
+	}()
+	rdb := initClient(servers)
 	defer func() { require.NoError(t, rdb.Close()) }()
-	ScanTest(t, rdb, ctx)
+
+	ScanTestInCluster(t, rdb, ctx)
 }
 
-func ScanTest(t *testing.T, rdb *redis.ClusterClient, ctx context.Context) {
+func ScanTestInCluster(t *testing.T, rdb *redis.ClusterClient, ctx context.Context) {
 
 	t.Run("SCAN Basic", func(t *testing.T) {
-		require.NoError(t, rdb.FlushDB(ctx).Err())
+		flushDBForCluster(t, rdb)
 		util.PopulateForCluster(t, rdb, "", 1000, 10)
-		keys := scanAll(t, rdb)
+		keys := scanAllNodes(t, rdb)
 		require.Len(t, keys, 1000)
 	})
 
 	t.Run("SCAN COUNT", func(t *testing.T) {
-		require.NoError(t, rdb.FlushDB(ctx).Err())
+		flushDBForCluster(t, rdb)
 		util.PopulateForCluster(t, rdb, "", 1000, 10)
-		keys := scanAll(t, rdb, "count", 5)
+		keys := scanAllNodes(t, rdb, "count", 5)
 		require.Len(t, keys, 1000)
 	})
 
 	t.Run("SCAN MATCH", func(t *testing.T) {
-		require.NoError(t, rdb.FlushDB(ctx).Err())
+		flushDBForCluster(t, rdb)
 		util.PopulateForCluster(t, rdb, "key:", 1000, 10)
-		keys := scanAll(t, rdb, "match", "key:*")
+		keys := scanAllNodes(t, rdb, "match", "key:*")
 		require.Len(t, keys, 1000)
 	})
 
-	t.Run("SCAN MATCH FOR", func(t *testing.T) {
-		require.NoError(t, rdb.FlushDB(ctx).Err())
-		util.PopulateForCluster(t, rdb, "test:B:{1}:info", 3, 10)
-		util.PopulateForCluster(t, rdb, "test:A:{1}:info", 3, 10)
-		keys, _ := scanAllNodes(ctx, rdb, "test:B:*")
-		keys2, _ := scanAllNodes(ctx, rdb, "test:*")
-		require.Len(t, keys2, 6)
-		require.Len(t, keys, 3)
+	t.Run("SCAN MATCH trigger HASH_SLOTS_MAX_ITERATIONS", func(t *testing.T) {
+		flushDBForCluster(t, rdb)
+		util.PopulateForCluster(t, rdb, "test:B:{1}:info", 10, 10)
+		util.PopulateForCluster(t, rdb, "test:A:{1}:info", 10, 10)
+		keys := scanAllNodes(t, rdb, "match", "test:B:*")
+		keys2 := scanAllNodes(t, rdb, "match", "test:*")
+		require.Len(t, keys2, 20)
+		require.Len(t, keys, 10)
 	})
 
 	t.Run("SCAN MATCH non-trivial pattern", func(t *testing.T) {
-		require.NoError(t, rdb.FlushDB(ctx).Err())
-
+		flushDBForCluster(t, rdb)
 		for _, key := range []string{"aa", "aab", "aabb", "ab", "abb", "ba"} {
 			require.NoError(t, rdb.Set(ctx, key, "hello", 0).Err())
 		}
 
-		keys := scanAll(t, rdb, "match", "a*")
+		keys := scanAllNodes(t, rdb, "match", "a*")
 		require.Equal(t, []string{"aa", "aab", "aabb", "ab", "abb"}, keys)
 
-		keys = scanAll(t, rdb, "match", "aa")
+		keys = scanAllNodes(t, rdb, "match", "aa")
 		require.Equal(t, []string{"aa"}, keys)
 
-		keys = scanAll(t, rdb, "match", "aa*")
+		keys = scanAllNodes(t, rdb, "match", "aa*")
 		require.Equal(t, []string{"aa", "aab", "aabb"}, keys)
 
-		keys = scanAll(t, rdb, "match", "a?")
+		keys = scanAllNodes(t, rdb, "match", "a?")
 		require.Equal(t, []string{"aa", "ab"}, keys)
 
-		keys = scanAll(t, rdb, "match", "a*?")
+		keys = scanAllNodes(t, rdb, "match", "a*?")
 		require.Equal(t, []string{"aa", "aab", "aabb", "ab", "abb"}, keys)
 
-		keys = scanAll(t, rdb, "match", "ab*")
+		keys = scanAllNodes(t, rdb, "match", "ab*")
 		require.Equal(t, []string{"ab", "abb"}, keys)
 
-		keys = scanAll(t, rdb, "match", "*ab")
+		keys = scanAllNodes(t, rdb, "match", "*ab")
 		require.Equal(t, []string{"aab", "ab"}, keys)
 
-		keys = scanAll(t, rdb, "match", "*ab*")
+		keys = scanAllNodes(t, rdb, "match", "*ab*")
 		require.Equal(t, []string{"aab", "aabb", "ab", "abb"}, keys)
 
 		// Special case: using [b]* instead of b* forces the a full scan of the keyspace,
 		// matching every result with the pattern. We ask for exactly one key, but the
 		// first 5 keys don't match the pattern. This tests that SCAN returns a valid
 		// cursor even when the first [limit] keys don't satisfy the pattern.
-		keys = scanAll(t, rdb, "match", "[b]*", "count", "1")
+		keys = scanAllNodes(t, rdb, "match", "[b]*", "count", "1")
 		require.Equal(t, []string{"ba"}, keys)
 	})
 
 	t.Run("SCAN guarantees check under write load", func(t *testing.T) {
-		require.NoError(t, rdb.FlushDB(ctx).Err())
+		flushDBForCluster(t, rdb)
 		util.PopulateForCluster(t, rdb, "", 100, 10)
+		mu := &sync.Mutex{}
 
 		// We start scanning here, so keys from 0 to 99 should all be reported at the end of the iteration.
 		var keys []string
 		c := "0"
 		for {
-			cursor, keyList := scan(t, rdb, c)
-
-			c = cursor
-			keys = append(keys, keyList...)
+			// Scan keys in the cluster using ForEachMaster
+			err := rdb.ForEachMaster(ctx, func(ctx context.Context, client *redis.Client) error {
+				c := "0"
+				for {
+					cursor, tempKeys := scan(t, client, c)
+					c = cursor
+					mu.Lock()
+					keys = append(keys, tempKeys...)
+					mu.Unlock()
+					if c == "0" {
+						break
+					}
+				}
+				return nil
+			})
+			if err != nil {
+				panic(err)
+			}
 
 			if c == "0" {
 				break
@@ -252,42 +204,6 @@ func ScanTest(t *testing.T, rdb *redis.ClusterClient, ctx context.Context) {
 		}
 		originKeys = slices.Compact(originKeys)
 		require.Len(t, originKeys, 100)
-	})
-
-	t.Run("SCAN with multi namespace", func(t *testing.T) {
-		require.NoError(t, rdb.FlushDB(ctx).Err())
-		require.NoError(t, rdb.ConfigSet(ctx, "requirepass", "foobared").Err())
-
-		tokens := []string{"test_ns_token1", "test_ns_token2"}
-		keyPrefixes := []string{"key1*", "key2*"}
-		namespaces := []string{"test_ns1", "test_ns2"}
-
-		// Add namespaces and write key
-		for i := 0; i < 2; i++ {
-			require.NoError(t, rdb.Do(ctx, "AUTH", "foobared").Err())
-			require.NoError(t, rdb.Do(ctx, "NAMESPACE", "ADD", namespaces[i], tokens[i]).Err())
-			require.NoError(t, rdb.Do(ctx, "AUTH", tokens[i]).Err())
-
-			for k := 0; k < 1000; k++ {
-				require.NoError(t, rdb.Set(ctx, fmt.Sprintf("%s:%d", keyPrefixes[i], k), "hello", 0).Err())
-			}
-			for k := 0; k < 100; k++ {
-				require.NoError(t, rdb.Set(ctx, strconv.Itoa(k), "hello", 0).Err())
-			}
-		}
-
-		// Check SCAN and SCAN MATCH in different namespace
-		for i := 0; i < 2; i++ {
-			require.NoError(t, rdb.Do(ctx, "AUTH", tokens[i]).Err())
-
-			// SCAN to get all keys
-			keys := scanAll(t, rdb)
-			require.Len(t, keys, 1100)
-
-			// SCAN MATCH
-			keys = scanAll(t, rdb, "match", keyPrefixes[i])
-			require.Len(t, keys, 1000)
-		}
 	})
 
 	t.Run("SSCAN with PATTERN", func(t *testing.T) {
@@ -436,26 +352,26 @@ func ScanTest(t *testing.T, rdb *redis.ClusterClient, ctx context.Context) {
 		require.NoError(t, rdb.Set(ctx, "stringtype1", "fee1", 0).Err())
 		require.NoError(t, rdb.Set(ctx, "stringtype2", "fee1", 0).Err())
 		require.NoError(t, rdb.Set(ctx, "stringtype3", "fee1", 0).Err())
-		require.Equal(t, []string{"stringtype1", "stringtype2", "stringtype3"}, scanAll(t, rdb, "match", "stringtype*", "type", "string"))
-		require.Equal(t, []string{"stringtype1", "stringtype2", "stringtype3"}, scanAll(t, rdb, "match", "stringtype*", "count", "3", "type", "string"))
+		require.Equal(t, []string{"stringtype1", "stringtype2", "stringtype3"}, scanAllNodes(t, rdb, "match", "stringtype*", "type", "string"))
+		require.Equal(t, []string{"stringtype1", "stringtype2", "stringtype3"}, scanAllNodes(t, rdb, "match", "stringtype*", "count", "3", "type", "string"))
 		//hash type
 		require.NoError(t, rdb.HSet(ctx, "hashtype1", "key1", "val1", "key2", "val2").Err())
 		require.NoError(t, rdb.HSet(ctx, "hashtype2", "key1", "val1", "key2", "val2").Err())
 		require.NoError(t, rdb.HSet(ctx, "hashtype3", "key1", "val1", "key2", "val2").Err())
-		require.Equal(t, []string{"hashtype1", "hashtype2", "hashtype3"}, scanAll(t, rdb, "match", "hashtype*", "type", "hash"))
-		require.Equal(t, []string{"hashtype1", "hashtype2", "hashtype3"}, scanAll(t, rdb, "match", "hashtype*", "count", "3", "type", "hash"))
+		require.Equal(t, []string{"hashtype1", "hashtype2", "hashtype3"}, scanAllNodes(t, rdb, "match", "hashtype*", "type", "hash"))
+		require.Equal(t, []string{"hashtype1", "hashtype2", "hashtype3"}, scanAllNodes(t, rdb, "match", "hashtype*", "count", "3", "type", "hash"))
 		//list type
 		require.NoError(t, rdb.RPush(ctx, "listtype1", "1").Err())
 		require.NoError(t, rdb.RPush(ctx, "listtype2", "2").Err())
 		require.NoError(t, rdb.RPush(ctx, "listtype3", "3").Err())
-		require.Equal(t, []string{"listtype1", "listtype2", "listtype3"}, scanAll(t, rdb, "match", "listtype*", "type", "list"))
-		require.Equal(t, []string{"listtype1", "listtype2", "listtype3"}, scanAll(t, rdb, "match", "listtype*", "count", "3", "type", "list"))
+		require.Equal(t, []string{"listtype1", "listtype2", "listtype3"}, scanAllNodes(t, rdb, "match", "listtype*", "type", "list"))
+		require.Equal(t, []string{"listtype1", "listtype2", "listtype3"}, scanAllNodes(t, rdb, "match", "listtype*", "count", "3", "type", "list"))
 		//set type
 		require.NoError(t, rdb.SAdd(ctx, "settype1", "1").Err())
 		require.NoError(t, rdb.SAdd(ctx, "settype2", "1").Err())
 		require.NoError(t, rdb.SAdd(ctx, "settype3", "1").Err())
-		require.Equal(t, []string{"settype1", "settype2", "settype3"}, scanAll(t, rdb, "match", "settype*", "type", "set"))
-		require.Equal(t, []string{"settype1", "settype2", "settype3"}, scanAll(t, rdb, "match", "settype*", "count", "3", "type", "set"))
+		require.Equal(t, []string{"settype1", "settype2", "settype3"}, scanAllNodes(t, rdb, "match", "settype*", "type", "set"))
+		require.Equal(t, []string{"settype1", "settype2", "settype3"}, scanAllNodes(t, rdb, "match", "settype*", "count", "3", "type", "set"))
 		//zet type
 		members := []redis.Z{
 			{Score: 1, Member: "1"},
@@ -466,32 +382,32 @@ func ScanTest(t *testing.T, rdb *redis.ClusterClient, ctx context.Context) {
 		require.NoError(t, rdb.ZAdd(ctx, "zsettype1", members...).Err())
 		require.NoError(t, rdb.ZAdd(ctx, "zsettype2", members...).Err())
 		require.NoError(t, rdb.ZAdd(ctx, "zsettype3", members...).Err())
-		require.Equal(t, []string{"zsettype1", "zsettype2", "zsettype3"}, scanAll(t, rdb, "match", "zsettype*", "type", "zset"))
-		require.Equal(t, []string{"zsettype1", "zsettype2", "zsettype3"}, scanAll(t, rdb, "match", "zsettype*", "count", "3", "type", "zset"))
+		require.Equal(t, []string{"zsettype1", "zsettype2", "zsettype3"}, scanAllNodes(t, rdb, "match", "zsettype*", "type", "zset"))
+		require.Equal(t, []string{"zsettype1", "zsettype2", "zsettype3"}, scanAllNodes(t, rdb, "match", "zsettype*", "count", "3", "type", "zset"))
 		//bitmap type
 		require.NoError(t, rdb.SetBit(ctx, "bitmaptype1", 0, 0).Err())
 		require.NoError(t, rdb.SetBit(ctx, "bitmaptype2", 0, 0).Err())
 		require.NoError(t, rdb.SetBit(ctx, "bitmaptype3", 0, 0).Err())
-		require.Equal(t, []string{"bitmaptype1", "bitmaptype2", "bitmaptype3"}, scanAll(t, rdb, "match", "bitmaptype*", "type", "bitmap"))
-		require.Equal(t, []string{"bitmaptype1", "bitmaptype2", "bitmaptype3"}, scanAll(t, rdb, "match", "bitmaptype*", "count", "3", "type", "bitmap"))
+		require.Equal(t, []string{"bitmaptype1", "bitmaptype2", "bitmaptype3"}, scanAllNodes(t, rdb, "match", "bitmaptype*", "type", "bitmap"))
+		require.Equal(t, []string{"bitmaptype1", "bitmaptype2", "bitmaptype3"}, scanAllNodes(t, rdb, "match", "bitmaptype*", "count", "3", "type", "bitmap"))
 		//stream type
 		require.NoError(t, rdb.XAdd(ctx, &redis.XAddArgs{Stream: "streamtype1", Values: []string{"item", "1", "value", "a"}}).Err())
 		require.NoError(t, rdb.XAdd(ctx, &redis.XAddArgs{Stream: "streamtype2", Values: []string{"item", "1", "value", "a"}}).Err())
 		require.NoError(t, rdb.XAdd(ctx, &redis.XAddArgs{Stream: "streamtype3", Values: []string{"item", "1", "value", "a"}}).Err())
-		require.Equal(t, []string{"streamtype1", "streamtype2", "streamtype3"}, scanAll(t, rdb, "match", "streamtype*", "type", "stream"))
-		require.Equal(t, []string{"streamtype1", "streamtype2", "streamtype3"}, scanAll(t, rdb, "match", "streamtype*", "count", "3", "type", "stream"))
+		require.Equal(t, []string{"streamtype1", "streamtype2", "streamtype3"}, scanAllNodes(t, rdb, "match", "streamtype*", "type", "stream"))
+		require.Equal(t, []string{"streamtype1", "streamtype2", "streamtype3"}, scanAllNodes(t, rdb, "match", "streamtype*", "count", "3", "type", "stream"))
 		//MBbloom type
 		require.NoError(t, rdb.Do(ctx, "bf.reserve", "MBbloomtype1", "0.02", "1000").Err())
 		require.NoError(t, rdb.Do(ctx, "bf.reserve", "MBbloomtype2", "0.02", "1000").Err())
 		require.NoError(t, rdb.Do(ctx, "bf.reserve", "MBbloomtype3", "0.02", "1000").Err())
-		require.Equal(t, []string{"MBbloomtype1", "MBbloomtype2", "MBbloomtype3"}, scanAll(t, rdb, "match", "MBbloomtype*", "type", "MBbloom--"))
-		require.Equal(t, []string{"MBbloomtype1", "MBbloomtype2", "MBbloomtype3"}, scanAll(t, rdb, "match", "MBbloomtype*", "count", "3", "type", "MBbloom--"))
+		require.Equal(t, []string{"MBbloomtype1", "MBbloomtype2", "MBbloomtype3"}, scanAllNodes(t, rdb, "match", "MBbloomtype*", "type", "MBbloom--"))
+		require.Equal(t, []string{"MBbloomtype1", "MBbloomtype2", "MBbloomtype3"}, scanAllNodes(t, rdb, "match", "MBbloomtype*", "count", "3", "type", "MBbloom--"))
 		//ReJSON-RL type
 		require.NoError(t, rdb.Do(ctx, "JSON.SET", "ReJSONtype1", "$", ` {"x":1, "y":2} `).Err())
 		require.NoError(t, rdb.Do(ctx, "JSON.SET", "ReJSONtype2", "$", ` {"x":1, "y":2} `).Err())
 		require.NoError(t, rdb.Do(ctx, "JSON.SET", "ReJSONtype3", "$", ` {"x":1, "y":2} `).Err())
-		require.Equal(t, []string{"ReJSONtype1", "ReJSONtype2", "ReJSONtype3"}, scanAll(t, rdb, "match", "ReJSONtype*", "type", "ReJSON-RL"))
-		require.Equal(t, []string{"ReJSONtype1", "ReJSONtype2", "ReJSONtype3"}, scanAll(t, rdb, "match", "ReJSONtype*", "count", "3", "type", "ReJSON-RL"))
+		require.Equal(t, []string{"ReJSONtype1", "ReJSONtype2", "ReJSONtype3"}, scanAllNodes(t, rdb, "match", "ReJSONtype*", "type", "ReJSON-RL"))
+		require.Equal(t, []string{"ReJSONtype1", "ReJSONtype2", "ReJSONtype3"}, scanAllNodes(t, rdb, "match", "ReJSONtype*", "count", "3", "type", "ReJSON-RL"))
 		//invalid type
 		util.ErrorRegexp(t, rdb.Do(ctx, "SCAN", "0", "count", "1", "match", "a*", "type", "hi").Err(), "Invalid type")
 
@@ -499,64 +415,73 @@ func ScanTest(t *testing.T, rdb *redis.ClusterClient, ctx context.Context) {
 
 }
 
-// SCAN of Kvrocks returns _cursor instead of cursor. Thus, redis.Client Scan can fail with
-// `cursor, err := rd.ReadInt()' returns error.
-//
-// This method provides an alternative to workaround it.
-func scan(t testing.TB, rdb *redis.ClusterClient, c string, args ...interface{}) (cursor string, keys []string) {
-	args = append([]interface{}{"SCAN", c}, args...)
-	r := rdb.Do(context.Background(), args...)
-	require.NoError(t, r.Err())
-	require.Len(t, r.Val(), 2)
+func startClusterServer(t *testing.T, ctx context.Context, config map[string]string) []*util.KvrocksServer {
+	config["cluster-enabled"] = "yes"
+	masterSrv := util.StartServer(t, config)
+	masterClient := masterSrv.NewClient()
+	defer func() { require.NoError(t, masterClient.Close()) }()
+	masterNodeID := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx00"
+	masterNodeID2 := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx10"
 
-	rs := r.Val().([]interface{})
-	cursor = rs[0].(string)
+	replicaSrv := util.StartServer(t, map[string]string{
+		"cluster-enabled": "yes",
+		// enabled the replication namespace to reproduce the issue #2214
+		"repl-namespace-enabled": "yes",
+	})
+	replicaClient := replicaSrv.NewClient()
+	// allow to run the read-only command in the replica
+	require.NoError(t, replicaClient.ReadOnly(ctx).Err())
+	defer func() { require.NoError(t, replicaClient.Close()) }()
+	replicaNodeID := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx01"
+	masterSrv2 := util.StartServer(t, config)
+	masterClient2 := masterSrv2.NewClient()
+	defer func() { require.NoError(t, masterClient2.Close()) }()
 
-	for _, key := range rs[1].([]interface{}) {
-		keys = append(keys, key.(string))
-	}
+	replicaSrv2 := util.StartServer(t, map[string]string{
+		"cluster-enabled": "yes",
+		// enabled the replication namespace to reproduce the issue #2214
+		"repl-namespace-enabled": "yes",
+	})
+	replicaClient2 := replicaSrv2.NewClient()
+	// allow to run the read-only command in the replica
+	require.NoError(t, replicaClient2.ReadOnly(ctx).Err())
+	defer func() { require.NoError(t, replicaClient2.Close()) }()
+	replicaNodeID2 := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx11"
 
-	return
+	clusterNodes1 := fmt.Sprintf("%s 127.0.0.1 %d master - 0-8000", masterNodeID, masterSrv.Port())
+	clusterNodes2 := fmt.Sprintf("%s 127.0.0.1 %d master - 8001-16383", masterNodeID2, masterSrv2.Port())
+	// clusterNodes1 = fmt.Sprintf("%s\n%s 127.0.0.1 %d slave %s", clusterNodes1, replicaNodeID, replicaSrv.Port(), masterNodeID)
+	// clusterNodes2 = fmt.Sprintf("%s\n%s 127.0.0.1 %d slave %s", clusterNodes2, replicaNodeID2, replicaSrv2.Port(), masterNodeID2)
+	clusterNodes := fmt.Sprintf("%s\n%s", clusterNodes1, clusterNodes2)
+
+	require.NoError(t, masterClient.Do(ctx, "clusterx", "SETNODEID", masterNodeID).Err())
+	require.NoError(t, masterClient2.Do(ctx, "clusterx", "SETNODEID", masterNodeID2).Err())
+	require.NoError(t, replicaClient.Do(ctx, "clusterx", "SETNODEID", replicaNodeID).Err())
+	require.NoError(t, replicaClient2.Do(ctx, "clusterx", "SETNODEID", replicaNodeID2).Err())
+
+	require.NoError(t, masterClient.Do(ctx, "clusterx", "SETNODES", clusterNodes, "1").Err())
+	require.NoError(t, replicaClient.Do(ctx, "clusterx", "SETNODES", clusterNodes, "1").Err())
+	require.NoError(t, masterClient2.Do(ctx, "clusterx", "SETNODES", clusterNodes, "1").Err())
+	require.NoError(t, replicaClient2.Do(ctx, "clusterx", "SETNODES", clusterNodes, "1").Err())
+
+	// return []*util.KvrocksServer{masterSrv, replicaSrv, masterSrv2, replicaSrv2}
+	return []*util.KvrocksServer{masterSrv, masterSrv2}
 }
 
-func scanAll(t testing.TB, rdb *redis.ClusterClient, args ...interface{}) (keys []string) {
-	c := "0"
-	for {
-		cursor, keyList := scan(t, rdb, c, args...)
-
-		c = cursor
-		keys = append(keys, keyList...)
-
-		if c == "0" {
-			slices.Sort(keys)
-			keys = slices.Compact(keys)
-			return
-		}
-	}
-}
-
-func scanAllNodes(ctx context.Context, rdb *redis.ClusterClient, pattern string) ([]string, error) {
+func scanAllNodes(t testing.TB, rdb *redis.ClusterClient, args ...interface{}) []string {
 	var keys []string
 	var mu sync.Mutex
-	var count int64 = 100
-
+	ctx := context.Background()
 	// Scan keys in the cluster using ForEachMaster
 	err := rdb.ForEachMaster(ctx, func(ctx context.Context, client *redis.Client) error {
-		var cursor uint64
+		c := "0"
 		for {
-			var tempKeys []string
-			var err error
-			tempKeys, cursor, err = client.Scan(ctx, cursor, pattern, count).Result()
-			if err != nil {
-				return err
-			}
+			cursor, tempKeys := scan(t, client, c, args...)
+			c = cursor
 			mu.Lock()
-			for _, key := range tempKeys {
-				fmt.Println("Key:", key)
-				keys = append(keys, key)
-			}
+			keys = append(keys, tempKeys...)
 			mu.Unlock()
-			if cursor == 0 {
+			if c == "0" {
 				break
 			}
 		}
@@ -566,17 +491,28 @@ func scanAllNodes(ctx context.Context, rdb *redis.ClusterClient, pattern string)
 		panic(err)
 	}
 
-	return keys, nil
+	// Sort and deduplicate the keys
+	slices.Sort(keys)
+	keys = slices.Compact(keys)
+
+	return keys
 }
 
-func universalPopulate(t testing.TB, rdb redis.ClusterClient, prefix string, n, size int) {
-	ctx := context.Background()
-	p := rdb.Pipeline()
-
-	for i := 0; i < n; i++ {
-		p.Do(ctx, "SET", fmt.Sprintf("%s%d", prefix, i), strings.Repeat("A", size))
+func initClient(servers []*util.KvrocksServer) *redis.ClusterClient {
+	addrs := make([]string, len(servers))
+	for i, s := range servers {
+		addrs[i] = s.HostPort()
 	}
+	rdb := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs: addrs,
+	})
+	return rdb
+}
 
-	_, err := p.Exec(ctx)
+func flushDBForCluster(t *testing.T, rdb *redis.ClusterClient) {
+	ctx := context.Background()
+	err := rdb.ForEachMaster(ctx, func(ctx context.Context, client *redis.Client) error {
+		return client.FlushDB(ctx).Err()
+	})
 	require.NoError(t, err)
 }

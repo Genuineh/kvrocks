@@ -24,7 +24,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/apache/kvrocks/tests/gocase/util"
@@ -93,16 +92,6 @@ func ScanTest(t *testing.T, rdb *redis.Client, ctx context.Context) {
 		util.Populate(t, rdb, "key:", 1000, 10)
 		keys := scanAll(t, rdb, "match", "key:*")
 		require.Len(t, keys, 1000)
-	})
-
-	t.Run("SCAN MATCH FOR", func(t *testing.T) {
-		require.NoError(t, rdb.FlushDB(ctx).Err())
-		util.Populate(t, rdb, "test:B:{1}:info", 3, 10)
-		util.Populate(t, rdb, "test:A:{1}:info", 3, 10)
-		keys, _ := scanAllNodes(ctx, rdb, "test:B:*")
-		keys2, _ := scanAllNodes(ctx, rdb, "test:*")
-		require.Len(t, keys2, 6)
-		require.Len(t, keys, 3)
 	})
 
 	t.Run("SCAN MATCH non-trivial pattern", func(t *testing.T) {
@@ -457,82 +446,4 @@ func scanAll(t testing.TB, rdb *redis.Client, args ...interface{}) (keys []strin
 			return
 		}
 	}
-}
-
-func scanAllNodes(ctx context.Context, rdb redis.UniversalClient, pattern string) ([]string, error) {
-	if clusterClient, ok := rdb.(*redis.ClusterClient); ok {
-		var keys []string
-		var mu sync.Mutex
-		var count int64 = 100
-
-		// Scan keys in the cluster using ForEachMaster
-		err := clusterClient.ForEachMaster(ctx, func(ctx context.Context, client *redis.Client) error {
-			var cursor uint64
-			for {
-				var tempKeys []string
-				var err error
-				tempKeys, cursor, err = client.Scan(ctx, cursor, pattern, count).Result()
-				if err != nil {
-					return err
-				}
-				mu.Lock()
-				for _, key := range tempKeys {
-					fmt.Println("Key:", key)
-					keys = append(keys, key)
-				}
-				mu.Unlock()
-				if cursor == 0 {
-					break
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			panic(err)
-		}
-
-		return keys, nil
-	}
-
-	singleNodeClient, ok := rdb.(*redis.Client)
-	if !ok {
-		return nil, fmt.Errorf("NOT SUPPORT CLIENT TYPE")
-	}
-
-	return scanNodeSingle(ctx, singleNodeClient, pattern)
-}
-
-func scanNodeSingle(ctx context.Context, node *redis.Client, pattern string) ([]string, error) {
-	var keys []string
-	var cursor uint64
-	var count int64 = 100
-
-	for {
-		var scanResult []string
-		var err error
-		scanResult, cursor, err = node.Scan(ctx, cursor, pattern, count).Result()
-		if err != nil {
-			return nil, fmt.Errorf("EXEC SCAN FAIL: %v", err)
-		}
-
-		keys = append(keys, scanResult...)
-
-		if cursor == 0 {
-			break
-		}
-	}
-
-	return keys, nil
-}
-
-func universalPopulate(t testing.TB, rdb redis.UniversalClient, prefix string, n, size int) {
-	ctx := context.Background()
-	p := rdb.Pipeline()
-
-	for i := 0; i < n; i++ {
-		p.Do(ctx, "SET", fmt.Sprintf("%s%d", prefix, i), strings.Repeat("A", size))
-	}
-
-	_, err := p.Exec(ctx)
-	require.NoError(t, err)
 }
