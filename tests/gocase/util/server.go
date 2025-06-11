@@ -193,32 +193,12 @@ func (s *KvrocksServer) Start() {
 
 	require.NoError(s.t, cmd.Start())
 
-	// 如果打开了集群模式，则需要等待集群节点信息同步完成
-	if s.configs["cluster-enabled"] == "yes" {
-		fmt.Println("Waiting for cluster node information to be synchronized...")
-		c := redis.NewClusterClient(&redis.ClusterOptions{
-			Addrs: []string{s.addr.String()},
-		})
-		defer func() { require.NoError(s.t, c.Close()) }()
-
-		// 需要增加集群节点信息
-		ctx := context.Background()
-		require.NoError(s.t, c.Do(ctx, "CLUSTERX", "SETNODEID", "0000000000000000000000000000000000000001").Err())
-		require.NoError(s.t, c.Do(ctx, "CLUSTERX", "SETNODES", "0000000000000000000000000000000000000001", s.addr.String(), "master-0-16383", "1").Err())
-
-		require.Eventually(s.t, func() bool {
-			err := c.Ping(context.Background()).Err()
-			return err == nil || err.Error() == "NOAUTH Authentication required."
-		}, time.Minute, time.Second)
-	} else {
-		c := redis.NewClient(&redis.Options{Addr: s.addr.String()})
-		defer func() { require.NoError(s.t, c.Close()) }()
-		require.Eventually(s.t, func() bool {
-			err := c.Ping(context.Background()).Err()
-			return err == nil || err.Error() == "NOAUTH Authentication required."
-		}, time.Minute, time.Second)
-
-	}
+	c := redis.NewClient(&redis.Options{Addr: s.addr.String()})
+	defer func() { require.NoError(s.t, c.Close()) }()
+	require.Eventually(s.t, func() bool {
+		err := c.Ping(context.Background()).Err()
+		return err == nil || err.Error() == "NOAUTH Authentication required."
+	}, time.Minute, time.Second)
 
 	s.cmd = cmd
 	s.clean = func(keepDir bool) {
