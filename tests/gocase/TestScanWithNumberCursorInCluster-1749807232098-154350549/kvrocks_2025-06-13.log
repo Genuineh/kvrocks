@@ -1,0 +1,20 @@
+[2025-06-13T17:33:52.104074+08:00][I][main.cc:170] kvrocks unstable (commit 273dea61)
+[2025-06-13T17:33:52.302409+08:00][I][storage.cc:388] [storage] Success to load the data from disk: 51 ms
+[2025-06-13T17:33:52.304249+08:00][I][worker.cc:76] [worker] Listening on: 127.0.0.1:42077
+[2025-06-13T17:33:52.304407+08:00][I][worker.cc:76] [worker] Listening on: 127.0.0.1:42077
+[2025-06-13T17:33:52.304512+08:00][I][worker.cc:76] [worker] Listening on: 127.0.0.1:42077
+[2025-06-13T17:33:52.304616+08:00][I][worker.cc:76] [worker] Listening on: 127.0.0.1:42077
+[2025-06-13T17:33:52.304714+08:00][I][worker.cc:76] [worker] Listening on: 127.0.0.1:42077
+[2025-06-13T17:33:52.304819+08:00][I][worker.cc:76] [worker] Listening on: 127.0.0.1:42077
+[2025-06-13T17:33:52.304943+08:00][I][worker.cc:76] [worker] Listening on: 127.0.0.1:42077
+[2025-06-13T17:33:52.305058+08:00][I][worker.cc:76] [worker] Listening on: 127.0.0.1:42077
+[2025-06-13T17:33:52.305154+08:00][I][cluster.cc:694] The cluster nodes file /home/jerryg/github/forked/kvrocks/tests/gocase/TestScanWithNumberCursorInCluster-1749807232098-154350549/nodes.conf is not found. Use CLUSTERX subcommands to specify it.
+[2025-06-13T17:33:52.305234+08:00][I][worker.cc:595] [worker] Thread #131610045281984 started
+[2025-06-13T17:33:52.305275+08:00][I][worker.cc:595] [worker] Thread #131610053674688 started
+[2025-06-13T17:33:52.305335+08:00][I][worker.cc:595] [worker] Thread #131610112423616 started
+[2025-06-13T17:33:52.305383+08:00][I][worker.cc:595] [worker] Thread #131610104030912 started
+[2025-06-13T17:33:52.305425+08:00][I][worker.cc:595] [worker] Thread #131610095638208 started
+[2025-06-13T17:33:52.305474+08:00][I][worker.cc:595] [worker] Thread #131610087245504 started
+[2025-06-13T17:33:52.305523+08:00][I][worker.cc:595] [worker] Thread #131610078852800 started
+[2025-06-13T17:33:52.305571+08:00][I][worker.cc:595] [worker] Thread #131610070460096 started
+[2025-06-13T17:33:52.305682+08:00][I][server.cc:243] [server] Ready to accept connections

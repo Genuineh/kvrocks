@@ -363,6 +363,7 @@ rocksdb::Status Database::Scan(engine::Context &ctx, const std::string &cursor, 
 
       if (metadata.Expired()) continue;
       std::tie(std::ignore, user_key) = ExtractNamespaceKey<std::string>(iter->key(), storage_->IsSlotIdEncoded());
+      info("Scan key: {}", user_key);
 
       if (!util::StringMatch(suffix_glob, user_key.substr(prefix.size()))) {
         continue;
@@ -391,11 +392,20 @@ rocksdb::Status Database::Scan(engine::Context &ctx, const std::string &cursor, 
       break;
     }
 
-    // Only apply HASH_SLOTS_MAX_ITERATIONS limit if we have already found some keys
-    // If no keys found yet, continue scanning to ensure we don't miss any data
-    if (slot_id > slot_start + HASH_SLOTS_MAX_ITERATIONS && !keys->empty()) {
-      end_cursor->append(user_key);
-      break;
+    if (slot_id > slot_start + HASH_SLOTS_MAX_ITERATIONS) {
+      if (keys->empty()) {
+        if (iter->Valid()) {
+          std::tie(std::ignore, user_key) = ExtractNamespaceKey<std::string>(iter->key(), storage_->IsSlotIdEncoded());
+          auto res = std::mismatch(prefix.begin(), prefix.end(), user_key.begin());
+          if (res.first == prefix.end() && util::StringMatch(suffix_glob, user_key.substr(prefix.size()))) {
+            keys->emplace_back(user_key);
+          }
+
+          end_cursor->append(user_key);
+        }
+      } else {
+        end_cursor->append(user_key);
+      }
     }
 
     ns_prefix = ComposeNamespaceKey(namespace_, "", false);
@@ -403,6 +413,7 @@ rocksdb::Status Database::Scan(engine::Context &ctx, const std::string &cursor, 
     ns_prefix.append(prefix);
     iter->Seek(ns_prefix);
   }
+  info("Scan found {} keys, next cursor is '{}'", keys->size(), *end_cursor);
   return rocksdb::Status::OK();
 }
 

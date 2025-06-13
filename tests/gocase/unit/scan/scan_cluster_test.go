@@ -476,12 +476,15 @@ func scanAllNodes(t testing.TB, rdb *redis.ClusterClient, args ...interface{}) [
 	err := rdb.ForEachMaster(ctx, func(ctx context.Context, client *redis.Client) error {
 		c := "0"
 		for {
+			t.Log("scanning on node", client.Options().Addr, "with cursor", c)
 			cursor, tempKeys := scan(t, client, c, args...)
 			c = cursor
 			mu.Lock()
+			t.Logf("found %d keys, c: %s on node %s", len(tempKeys), c, client.Options().Addr)
 			keys = append(keys, tempKeys...)
 			mu.Unlock()
 			if c == "0" {
+				t.Log("scan finished on node", client.Options().Addr)
 				break
 			}
 		}
