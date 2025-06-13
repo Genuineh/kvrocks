@@ -31,7 +31,6 @@
 #include "common/time_util.h"
 #include "config/config.h"
 #include "error_constants.h"
-#include "logging.h"
 #include "server/redis_connection.h"
 #include "server/redis_reply.h"
 #include "server/server.h"
@@ -898,14 +897,12 @@ class CommandScan : public CommandScanBase {
   static std::string GenerateOutput(Server *srv, [[maybe_unused]] const Connection *conn,
                                     const std::vector<std::string> &keys, const std::string &end_cursor) {
     std::vector<std::string> list;
-    std::string end_cursor_str = "0";
     if (!end_cursor.empty()) {
-      end_cursor_str = srv->GenerateCursorFromKeyName(end_cursor, CursorType::kTypeBase, kCursorPrefix);
-      list.emplace_back(redis::BulkString(end_cursor_str));
+      list.emplace_back(
+          redis::BulkString(srv->GenerateCursorFromKeyName(end_cursor, CursorType::kTypeBase, kCursorPrefix)));
     } else {
       list.emplace_back(redis::BulkString("0"));
     }
-    // info("Output end_key: {} next_cursor: {}", end_cursor, end_cursor_str);
 
     list.emplace_back(ArrayOfBulkStrings(keys));
 
@@ -924,7 +921,6 @@ class CommandScan : public CommandScanBase {
       return {Status::RedisExecErr, s.ToString()};
     }
     *output = GenerateOutput(srv, conn, keys, end_key);
-    // info("SCAN command executed with cursor '{}' and limit '{}', found {} keys", cursor_, limit_, keys.size());
     return Status::OK();
   }
 };

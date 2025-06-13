@@ -26,8 +26,6 @@ import (
 	"sync"
 	"testing"
 
-	"time"
-
 	"github.com/apache/kvrocks/tests/gocase/util"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
@@ -87,198 +85,6 @@ func TestScanWithStringCursorInCluster(t *testing.T) {
 
 	ScanTestInCluster(t, rdb, ctx)
 }
-
-func TestScanWithStringCursorInClusterPerformance(t *testing.T) {
-	ctx := context.Background()
-	servers := startClusterServer(t, ctx, map[string]string{})
-	defer func() {
-		for _, s := range servers {
-			s.Close()
-		}
-	}()
-
-	rdb := initClient(servers)
-	defer func() { require.NoError(t, rdb.Close()) }()
-
-	t.Run("SCAN Performance One Match", func(t *testing.T) {
-		flushDBForCluster(t, rdb)
-		keyPrefix := "perfkey:"
-		numKeys := 1000000
-		for i := 0; i < numKeys; i++ {
-			key := fmt.Sprintf("%s%d", keyPrefix, i) // e.g., "perfkey:0", "perfkey:1", ...
-			require.NoError(t, rdb.Set(ctx, key, "value", 0).Err())
-		}
-
-		targetKey := fmt.Sprintf("%s%d", keyPrefix, numKeys/2) // e.g., "perfkey:500"
-
-		startTime := time.Now()
-		// Scan for the specific key. Use "match" for consistency with other tests in this file.
-		keys := scanAllNodes(t, rdb, "match", targetKey, "count", "1")
-		duration := time.Since(startTime)
-
-		require.Len(t, keys, 1, "Should find exactly one key")
-		require.Equal(t, targetKey, keys[0], "The found key should be the target key")
-		t.Logf("SCAN Performance One Match: Found key '%s' out of %d keys in %v", targetKey, numKeys, duration)
-	})
-}
-
-// TestScanStressForNoMatchLatency is a stress test to check if the latency of
-// SCAN 0 MATCH (for non-existent patterns) increases when repeatedly populating
-// different data, scanning, and repopulating multiple times.
-// func TestScanStressForNoMatchLatency(t *testing.T) {
-// 	ctx := context.Background()
-// 	servers := startClusterServer(t, ctx, map[string]string{})
-// 	defer func() {
-// 		for _, s := range servers {
-// 			s.Close()
-// 		}
-// 	}()
-// 	time.Sleep(5 * time.Hour)
-
-// 	rdb := initClient(servers)
-// 	defer func() { require.NoError(t, rdb.Close()) }()
-
-// 	// Test parameters
-// 	numIterations := 100                                      // Number of populate-scan-repopulate cycles
-// 	keysPerIteration := 2000                                  // Number of keys to populate each iteration
-// 	scansPerIteration := 2                                    // Number of SCAN operations per iteration
-// 	scanPattern := "this_pattern_should_not_match_anything_*" // A pattern expected to match no keys
-// 	scanCount := int64(250)                                   // Number of keys per SCAN
-
-// 	var allLatencies []time.Duration
-// 	var mu sync.Mutex // To protect latencies slice
-
-// 	t.Logf("Starting SCAN stress test with %d populate-scan-repopulate iterations.", numIterations)
-
-// 	for iteration := 0; iteration < numIterations; iteration++ {
-// 		t.Logf("Starting iteration %d/%d", iteration+1, numIterations)
-
-// 		// 1. Clear the database
-// 		flushDBForCluster(t, rdb)
-
-// 		// 2. Populate with different data for each iteration
-// 		keyPrefix := fmt.Sprintf("iter%d_key", iteration)
-// 		for i := 0; i < keysPerIteration; i++ {
-// 			keyName := fmt.Sprintf("%s:%d", keyPrefix, i)
-// 			keyValue := fmt.Sprintf("value_%d_%d", iteration, i)
-// 			require.NoError(t, rdb.Set(ctx, keyName, keyValue, 0).Err())
-// 		}
-
-// 		t.Logf("Iteration %d: Populated %d keys with prefix '%s'", iteration+1, keysPerIteration, keyPrefix)
-
-// 		// 3. Perform SCAN operations and measure latencies
-// 		var iterationLatencies []time.Duration
-
-// 		var wg sync.WaitGroup
-// 		wg.Add(1)
-// 		go func(iter int) {
-// 			defer wg.Done()
-// 			for scanOp := 0; scanOp < scansPerIteration; scanOp++ {
-// 				loopIterationStartTime := time.Now()
-
-// 				// Perform SCAN 0 MATCH on all master nodes
-// 				err := rdb.ForEachMaster(ctx, func(ctx context.Context, client *redis.Client) error {
-// 					// Each call to client.Scan is one SCAN command on one master node
-// 					_, _, errScan := client.Scan(ctx, 0, scanPattern, scanCount).Result()
-
-// 					// We don't primarily care about the returned keys for this latency test,
-// 					// but we should check for errors.
-// 					if errScan != nil {
-// 						t.Logf("Warning: Error during SCAN on a master (iter %d, scan %d): %v", iter+1, scanOp+1, errScan)
-// 					}
-// 					return nil // Indicate success for this master to ForEachMaster
-// 				})
-
-// 				// Record the latency for this iteration (covering all masters)
-// 				scanIterationLatency := time.Since(loopIterationStartTime)
-// 				mu.Lock()
-// 				iterationLatencies = append(iterationLatencies, scanIterationLatency)
-// 				allLatencies = append(allLatencies, scanIterationLatency)
-// 				mu.Unlock()
-
-// 				if err != nil {
-// 					t.Errorf("Critical error during ForEachMaster (iter %d, scan %d): %v", iter+1, scanOp+1, err)
-// 					return // Exit goroutine
-// 				}
-// 			}
-// 		}(iteration)
-
-// 		// Wait for the scans to complete
-// 		wg.Wait()
-
-// 		// Calculate average latency for this iteration
-// 		var iterationLatencySum time.Duration
-// 		for _, lat := range iterationLatencies {
-// 			iterationLatencySum += lat
-// 		}
-// 		avgIterationLatency := time.Duration(0)
-// 		if len(iterationLatencies) > 0 {
-// 			avgIterationLatency = iterationLatencySum / time.Duration(len(iterationLatencies))
-// 		}
-
-// 		t.Logf("Iteration %d: Completed %d SCAN operations, average latency: %v",
-// 			iteration+1, len(iterationLatencies), avgIterationLatency)
-// 	}
-
-// 	t.Logf("SCAN stress test finished. Collected %d total latency samples across %d iterations.",
-// 		len(allLatencies), numIterations)
-
-// 	// Analyze latencies across all iterations
-// 	if len(allLatencies) < 20 { // Need a minimum number of samples for meaningful comparison
-// 		t.Logf("Not enough latency samples collected (%d) for detailed trend analysis. Min required: 20.", len(allLatencies))
-// 		if len(allLatencies) == 0 {
-// 			t.Error("No latency samples collected. Test might have failed to run SCAN operations.")
-// 		}
-// 		return
-// 	}
-
-// 	numSamples := len(allLatencies)
-// 	chunkSize := numSamples / 5
-// 	if chunkSize == 0 && numSamples > 0 {
-// 		chunkSize = 1
-// 	}
-
-// 	var firstChunkSum time.Duration
-// 	for i := 0; i < chunkSize; i++ {
-// 		firstChunkSum += allLatencies[i]
-// 	}
-// 	avgLatencyFirstChunk := time.Duration(0)
-// 	if chunkSize > 0 {
-// 		avgLatencyFirstChunk = firstChunkSum / time.Duration(chunkSize)
-// 	}
-
-// 	var lastChunkSum time.Duration
-// 	startIndexOfLastChunk := numSamples - chunkSize
-// 	if startIndexOfLastChunk < chunkSize && numSamples > chunkSize {
-// 		startIndexOfLastChunk = chunkSize
-// 	}
-
-// 	actualLastChunkSize := 0
-// 	if chunkSize > 0 {
-// 		for i := startIndexOfLastChunk; i < numSamples; i++ {
-// 			lastChunkSum += allLatencies[i]
-// 			actualLastChunkSize++
-// 		}
-// 	}
-
-// 	avgLatencyLastChunk := time.Duration(0)
-// 	if actualLastChunkSize > 0 {
-// 		avgLatencyLastChunk = lastChunkSum / time.Duration(actualLastChunkSize)
-// 	}
-
-// 	t.Logf("Average latency of first %d samples (approx 20%%): %v", chunkSize, avgLatencyFirstChunk)
-// 	t.Logf("Average latency of last %d samples (approx 20%%): %v", actualLastChunkSize, avgLatencyLastChunk)
-
-// 	significantIncreaseFactor := 2.0
-// 	if avgLatencyFirstChunk > 0 && avgLatencyLastChunk > time.Duration(float64(avgLatencyFirstChunk)*significantIncreaseFactor) {
-// 		t.Errorf("SCAN 0 MATCH latency appears to have increased significantly: from ~%v to ~%v (more than %.1fx).",
-// 			avgLatencyFirstChunk, avgLatencyLastChunk, significantIncreaseFactor)
-// 	} else if avgLatencyFirstChunk == 0 && avgLatencyLastChunk > 1*time.Millisecond {
-// 		t.Errorf("SCAN 0 MATCH latency increased from effectively zero to ~%v.", avgLatencyLastChunk)
-// 	} else {
-// 		t.Logf("SCAN 0 MATCH latency remained relatively stable or did not increase significantly across %d iterations.", numIterations)
-// 	}
-// }
 
 func ScanTestInCluster(t *testing.T, rdb *redis.ClusterClient, ctx context.Context) {
 
@@ -607,27 +413,6 @@ func ScanTestInCluster(t *testing.T, rdb *redis.ClusterClient, ctx context.Conte
 
 	})
 
-	t.Run("SCAN Performance One Match", func(t *testing.T) {
-		flushDBForCluster(t, rdb)
-		keyPrefix := "perfkey:"
-		numKeys := 1000
-		for i := 0; i < numKeys; i++ {
-			key := fmt.Sprintf("%s%d", keyPrefix, i) // e.g., "perfkey:0", "perfkey:1", ...
-			require.NoError(t, rdb.Set(ctx, key, "value", 0).Err())
-		}
-
-		targetKey := fmt.Sprintf("%s%d", keyPrefix, numKeys/2) // e.g., "perfkey:500"
-
-		startTime := time.Now()
-		// Scan for the specific key. Use "match" for consistency with other tests in this file.
-		keys := scanAllNodes(t, rdb, "match", targetKey)
-		duration := time.Since(startTime)
-
-		require.Len(t, keys, 1, "Should find exactly one key")
-		require.Equal(t, targetKey, keys[0], "The found key should be the target key")
-		t.Logf("SCAN Performance One Match: Found key '%s' out of %d keys in %v", targetKey, numKeys, duration)
-	})
-
 }
 
 func startClusterServer(t *testing.T, ctx context.Context, config map[string]string) []*util.KvrocksServer {
@@ -638,30 +423,30 @@ func startClusterServer(t *testing.T, ctx context.Context, config map[string]str
 	masterNodeID := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx00"
 	masterNodeID2 := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx10"
 
-	// replicaSrv := util.StartServer(t, map[string]string{
-	// 	"cluster-enabled": "yes",
-	// 	// enabled the replication namespace to reproduce the issue #2214
-	// 	"repl-namespace-enabled": "yes",
-	// })
-	// replicaClient := replicaSrv.NewClient()
-	// // allow to run the read-only command in the replica
-	// require.NoError(t, replicaClient.ReadOnly(ctx).Err())
-	// defer func() { require.NoError(t, replicaClient.Close()) }()
-	// replicaNodeID := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx01"
+	replicaSrv := util.StartServer(t, map[string]string{
+		"cluster-enabled": "yes",
+		// enabled the replication namespace to reproduce the issue #2214
+		"repl-namespace-enabled": "yes",
+	})
+	replicaClient := replicaSrv.NewClient()
+	// allow to run the read-only command in the replica
+	require.NoError(t, replicaClient.ReadOnly(ctx).Err())
+	defer func() { require.NoError(t, replicaClient.Close()) }()
+	replicaNodeID := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx01"
 	masterSrv2 := util.StartServer(t, config)
 	masterClient2 := masterSrv2.NewClient()
 	defer func() { require.NoError(t, masterClient2.Close()) }()
 
-	// replicaSrv2 := util.StartServer(t, map[string]string{
-	// 	"cluster-enabled": "yes",
-	// 	// enabled the replication namespace to reproduce the issue #2214
-	// 	"repl-namespace-enabled": "yes",
-	// })
-	// replicaClient2 := replicaSrv2.NewClient()
-	// // allow to run the read-only command in the replica
-	// require.NoError(t, replicaClient2.ReadOnly(ctx).Err())
-	// defer func() { require.NoError(t, replicaClient2.Close()) }()
-	// replicaNodeID2 := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx11"
+	replicaSrv2 := util.StartServer(t, map[string]string{
+		"cluster-enabled": "yes",
+		// enabled the replication namespace to reproduce the issue #2214
+		"repl-namespace-enabled": "yes",
+	})
+	replicaClient2 := replicaSrv2.NewClient()
+	// allow to run the read-only command in the replica
+	require.NoError(t, replicaClient2.ReadOnly(ctx).Err())
+	defer func() { require.NoError(t, replicaClient2.Close()) }()
+	replicaNodeID2 := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx11"
 
 	clusterNodes1 := fmt.Sprintf("%s 127.0.0.1 %d master - 0-8000", masterNodeID, masterSrv.Port())
 	clusterNodes2 := fmt.Sprintf("%s 127.0.0.1 %d master - 8001-16383", masterNodeID2, masterSrv2.Port())
@@ -671,15 +456,14 @@ func startClusterServer(t *testing.T, ctx context.Context, config map[string]str
 
 	require.NoError(t, masterClient.Do(ctx, "clusterx", "SETNODEID", masterNodeID).Err())
 	require.NoError(t, masterClient2.Do(ctx, "clusterx", "SETNODEID", masterNodeID2).Err())
-	// require.NoError(t, replicaClient.Do(ctx, "clusterx", "SETNODEID", replicaNodeID).Err())
-	// require.NoError(t, replicaClient2.Do(ctx, "clusterx", "SETNODEID", replicaNodeID2).Err())
+	require.NoError(t, replicaClient.Do(ctx, "clusterx", "SETNODEID", replicaNodeID).Err())
+	require.NoError(t, replicaClient2.Do(ctx, "clusterx", "SETNODEID", replicaNodeID2).Err())
 
 	require.NoError(t, masterClient.Do(ctx, "clusterx", "SETNODES", clusterNodes, "1").Err())
-	// require.NoError(t, replicaClient.Do(ctx, "clusterx", "SETNODES", clusterNodes, "1").Err())
+	require.NoError(t, replicaClient.Do(ctx, "clusterx", "SETNODES", clusterNodes, "1").Err())
 	require.NoError(t, masterClient2.Do(ctx, "clusterx", "SETNODES", clusterNodes, "1").Err())
-	// require.NoError(t, replicaClient2.Do(ctx, "clusterx", "SETNODES", clusterNodes, "1").Err())
+	require.NoError(t, replicaClient2.Do(ctx, "clusterx", "SETNODES", clusterNodes, "1").Err())
 
-	t.Log("Cluster nodes:", clusterNodes)
 	// return []*util.KvrocksServer{masterSrv, replicaSrv, masterSrv2, replicaSrv2}
 	return []*util.KvrocksServer{masterSrv, masterSrv2}
 }
