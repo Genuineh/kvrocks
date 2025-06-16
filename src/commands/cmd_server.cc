@@ -904,8 +904,6 @@ class CommandScan : public CommandScanBase {
       list.emplace_back(redis::BulkString("0"));
     }
 
-    info("SCAN command returned {} keys, next cursor is '{}'", keys.size(), end_cursor);
-
     list.emplace_back(ArrayOfBulkStrings(keys));
 
     return redis::Array(list);
@@ -914,7 +912,6 @@ class CommandScan : public CommandScanBase {
   Status Execute(engine::Context &ctx, Server *srv, Connection *conn, std::string *output) override {
     redis::Database redis_db(srv->storage, conn->GetNamespace());
     auto key_name = srv->GetKeyNameFromCursor(cursor_, CursorType::kTypeBase);
-    info("input key_name: {}", key_name);
 
     std::vector<std::string> keys;
     std::string end_key;

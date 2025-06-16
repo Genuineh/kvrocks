@@ -2079,7 +2079,6 @@ std::string Server::GenerateCursorFromKeyName(const std::string &key_name, Curso
     // add prefix for SCAN
     return prefix + key_name;
   }
-  info("need gen key_name: {}", key_name);
   auto counter = cursor_counter_.fetch_add(1);
   auto number_cursor = NumberCursor(cursor_type, counter, key_name);
   cursor_dict_->at(number_cursor.GetIndex()) = {number_cursor, key_name};
@@ -2101,7 +2100,6 @@ std::string Server::GetKeyNameFromCursor(const std::string &cursor, CursorType c
   }
   auto number_cursor = NumberCursor(*s);
   // Because the index information is fully stored in the cursor, we can directly obtain the index from the cursor.
-  info("need get key_name: {}, index: {}, cursor: {}", number_cursor.ToString(), number_cursor.GetIndex(), cursor);
   auto item = cursor_dict_->at(number_cursor.GetIndex());
   if (number_cursor.IsMatch(item, cursor_type)) {
     return item.key_name;

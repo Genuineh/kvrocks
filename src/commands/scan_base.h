@@ -36,12 +36,6 @@ class CommandScanBase : public Commander {
  public:
   Status Parse(const std::vector<std::string> &args) override {
     CommandParser parser(args, 1);
-    std::string cmd("SCAN ");
-    for (const auto &arg : args) {
-      cmd.append(arg).append(" ");
-    }
-    info("Executing command: {}", cmd);
-
     PutCursor(GET_OR_RET(parser.TakeStr()));
 
     return ParseAdditionalFlags<true>(parser);

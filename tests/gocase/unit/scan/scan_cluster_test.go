@@ -109,7 +109,7 @@ func ScanTestInCluster(t *testing.T, rdb *redis.ClusterClient, ctx context.Conte
 		require.Len(t, keys, 1000)
 	})
 
-	t.Run("SCAN MATCH trigger HASH_SLOTS_MAX_ITERATIONS", func(t *testing.T) {
+	t.Run("SCAN MATCH for diff prex in same slot", func(t *testing.T) {
 		flushDBForCluster(t, rdb)
 		util.PopulateForCluster(t, rdb, "test:B:{1}:info", 10, 10)
 		util.PopulateForCluster(t, rdb, "test:A:{1}:info", 10, 10)
@@ -450,8 +450,6 @@ func startClusterServer(t *testing.T, ctx context.Context, config map[string]str
 
 	clusterNodes1 := fmt.Sprintf("%s 127.0.0.1 %d master - 0-8000", masterNodeID, masterSrv.Port())
 	clusterNodes2 := fmt.Sprintf("%s 127.0.0.1 %d master - 8001-16383", masterNodeID2, masterSrv2.Port())
-	// clusterNodes1 = fmt.Sprintf("%s\n%s 127.0.0.1 %d slave %s", clusterNodes1, replicaNodeID, replicaSrv.Port(), masterNodeID)
-	// clusterNodes2 = fmt.Sprintf("%s\n%s 127.0.0.1 %d slave %s", clusterNodes2, replicaNodeID2, replicaSrv2.Port(), masterNodeID2)
 	clusterNodes := fmt.Sprintf("%s\n%s", clusterNodes1, clusterNodes2)
 
 	require.NoError(t, masterClient.Do(ctx, "clusterx", "SETNODEID", masterNodeID).Err())
@@ -464,7 +462,6 @@ func startClusterServer(t *testing.T, ctx context.Context, config map[string]str
 	require.NoError(t, masterClient2.Do(ctx, "clusterx", "SETNODES", clusterNodes, "1").Err())
 	require.NoError(t, replicaClient2.Do(ctx, "clusterx", "SETNODES", clusterNodes, "1").Err())
 
-	// return []*util.KvrocksServer{masterSrv, replicaSrv, masterSrv2, replicaSrv2}
 	return []*util.KvrocksServer{masterSrv, masterSrv2}
 }
 

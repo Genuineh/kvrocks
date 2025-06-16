@@ -20,6 +20,8 @@
 
 #include "redis_db.h"
 
+#include <cstddef>
+#include <cstring>
 #include <ctime>
 #include <utility>
 
@@ -27,8 +29,10 @@
 #include "common/scope_exit.h"
 #include "common/string_util.h"
 #include "db_util.h"
+#include "logging.h"
 #include "parse_util.h"
 #include "rocksdb/iterator.h"
+#include "rocksdb/slice.h"
 #include "rocksdb/status.h"
 #include "storage/iterator.h"
 #include "storage/redis_metadata.h"
@@ -322,6 +326,7 @@ rocksdb::Status Database::Scan(engine::Context &ctx, const std::string &cursor, 
   uint64_t cnt = 0;
   uint16_t slot_start = 0;
   std::string ns_prefix;
+  std::string original_ns_prefix;
   std::string user_key;
 
   auto iter = util::UniqueIterator(ctx, ctx.GetReadOptions(), metadata_cf_handle_);
@@ -332,10 +337,12 @@ rocksdb::Status Database::Scan(engine::Context &ctx, const std::string &cursor, 
     ns_prefix = ComposeNamespaceKey(namespace_, "", false);
     if (!prefix.empty()) {
       PutFixed16(&ns_prefix, slot_start);
+      original_ns_prefix = ns_prefix;
       ns_prefix.append(prefix);
     }
   } else {
     ns_prefix = AppendNamespacePrefix(prefix);
+    original_ns_prefix = ns_prefix;
   }
 
   if (!cursor.empty()) {
@@ -352,9 +359,21 @@ rocksdb::Status Database::Scan(engine::Context &ctx, const std::string &cursor, 
   uint16_t slot_id = slot_start;
   while (true) {
     for (; iter->Valid() && cnt < limit; iter->Next()) {
-      if (!ns_prefix.empty() && !iter->key().starts_with(ns_prefix)) {
+      if (!original_ns_prefix.empty() &&
+          (iter->key().size() < original_ns_prefix.size() || !iter->key().starts_with(original_ns_prefix))) {
+        // If the key does not start with the original namespace prefix, skip it
         break;
       }
+
+      if (!prefix.empty()) {
+        // prefix is not empty, we need to check if the key starts with the prefix
+        size_t sub_key_size = iter->key().size() - original_ns_prefix.size();
+        if (sub_key_size < prefix.size() ||
+            iter->key().ToStringView().compare(original_ns_prefix.size(), prefix.size(), prefix.data()) != 0) {
+          continue;
+        }
+      }
+
       Metadata metadata(kRedisNone, false);
       auto s = metadata.Decode(iter->value());
       if (!s.ok()) continue;
@@ -363,7 +382,6 @@ rocksdb::Status Database::Scan(engine::Context &ctx, const std::string &cursor, 
 
       if (metadata.Expired()) continue;
       std::tie(std::ignore, user_key) = ExtractNamespaceKey<std::string>(iter->key(), storage_->IsSlotIdEncoded());
-      info("Scan key: {}", user_key);
 
       if (!util::StringMatch(suffix_glob, user_key.substr(prefix.size()))) {
         continue;
@@ -406,14 +424,15 @@ rocksdb::Status Database::Scan(engine::Context &ctx, const std::string &cursor, 
       } else {
         end_cursor->append(user_key);
       }
+      break;
     }
 
     ns_prefix = ComposeNamespaceKey(namespace_, "", false);
     PutFixed16(&ns_prefix, slot_id);
+    original_ns_prefix = ns_prefix;
     ns_prefix.append(prefix);
     iter->Seek(ns_prefix);
   }
-  info("Scan found {} keys, next cursor is '{}'", keys->size(), *end_cursor);
   return rocksdb::Status::OK();
 }
 
