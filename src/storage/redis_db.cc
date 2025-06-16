@@ -332,17 +332,17 @@ rocksdb::Status Database::Scan(engine::Context &ctx, const std::string &cursor, 
   auto iter = util::UniqueIterator(ctx, ctx.GetReadOptions(), metadata_cf_handle_);
 
   std::string ns_cursor = AppendNamespacePrefix(cursor);
+  ns_prefix = ComposeNamespaceKey(namespace_, "", false);
   if (storage_->IsSlotIdEncoded()) {
     slot_start = cursor.empty() ? 0 : GetSlotIdFromKey(cursor);
-    ns_prefix = ComposeNamespaceKey(namespace_, "", false);
     if (!prefix.empty()) {
       PutFixed16(&ns_prefix, slot_start);
       original_ns_prefix = ns_prefix;
       ns_prefix.append(prefix);
     }
   } else {
-    ns_prefix = AppendNamespacePrefix(prefix);
     original_ns_prefix = ns_prefix;
+    ns_prefix.append(prefix);
   }
 
   if (!cursor.empty()) {
