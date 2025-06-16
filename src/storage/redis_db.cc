@@ -20,8 +20,6 @@
 
 #include "redis_db.h"
 
-#include <cstddef>
-#include <cstring>
 #include <ctime>
 #include <utility>
 
@@ -29,10 +27,8 @@
 #include "common/scope_exit.h"
 #include "common/string_util.h"
 #include "db_util.h"
-#include "logging.h"
 #include "parse_util.h"
 #include "rocksdb/iterator.h"
-#include "rocksdb/slice.h"
 #include "rocksdb/status.h"
 #include "storage/iterator.h"
 #include "storage/redis_metadata.h"
