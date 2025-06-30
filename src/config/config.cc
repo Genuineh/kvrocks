@@ -192,6 +192,7 @@ Config::Config() {
       {"log-level", false, new EnumField<spdlog::level::level_enum>(&log_level, log_levels, spdlog::level::info)},
       {"pidfile", true, new StringField(&pidfile, kDefaultPidfile)},
       {"max-io-mb", false, new IntField(&max_io_mb, 0, 0, INT_MAX)},
+      {"enable-blob-cache", true, new YesNoField(&enable_blob_cache, false)},
       {"max-bitmap-to-string-mb", false, new IntField(&max_bitmap_to_string_mb, 16, 0, INT_MAX)},
       {"max-db-size", false, new IntField(&max_db_size, 0, 0, INT_MAX)},
       {"max-replication-mb", false, new IntField(&max_replication_mb, 0, 0, INT_MAX)},
@@ -291,7 +292,7 @@ Config::Config() {
       {"rocksdb.blob_garbage_collection_age_cutoff", false,
        new IntField(&rocks_db.blob_garbage_collection_age_cutoff, 25, 0, 100)},
       {"rocksdb.max_bytes_for_level_base", false,
-       new IntField(&rocks_db.max_bytes_for_level_base, 268435456, 0, INT_MAX)},
+       new UInt64Field(&rocks_db.max_bytes_for_level_base, 268435456ULL, 0ULL, UINT64_MAX)},
       {"rocksdb.max_bytes_for_level_multiplier", false,
        new IntField(&rocks_db.max_bytes_for_level_multiplier, 10, 1, 100)},
       {"rocksdb.level_compaction_dynamic_level_bytes", false,
@@ -301,6 +302,8 @@ Config::Config() {
       {"rocksdb.avoid_unnecessary_blocking_io", true, new YesNoField(&rocks_db.avoid_unnecessary_blocking_io, true)},
       {"rocksdb.partition_filters", true, new YesNoField(&rocks_db.partition_filters, true)},
       {"rocksdb.max_compaction_bytes", false, new Int64Field(&rocks_db.max_compaction_bytes, 0, 0, INT64_MAX)},
+      {"rocksdb.sst_file_delete_rate_bytes_per_sec", false,
+       new Int64Field(&rocks_db.sst_file_delete_rate_bytes_per_sec, 0, 0, INT64_MAX)},
 
       /* rocksdb write options */
       {"rocksdb.write_options.sync", true, new YesNoField(&rocks_db.write_options.sync, false)},
@@ -718,6 +721,12 @@ void Config::initFieldCallback() {
            return {Status::NotOK, errLevelCompactionDynamicLevelBytesNotSet};
          }
          return srv->storage->SetOptionForAllColumnFamilies(TrimRocksDbPrefix(k), v);
+       }},
+      {"rocksdb.sst_file_delete_rate_bytes_per_sec",
+       [this](Server *srv, [[maybe_unused]] const std::string &k, [[maybe_unused]] const std::string &v) -> Status {
+         if (!srv) return Status::OK();
+         srv->storage->SetSstFileDeleteRateBytesPerSecond(rocks_db.sst_file_delete_rate_bytes_per_sec);
+         return Status::OK();
        }},
       {"rocksdb.max_open_files", set_db_option_cb},
       {"rocksdb.stats_dump_period_sec", set_db_option_cb},

@@ -146,6 +146,7 @@ rocksdb::BlockBasedTableOptions Storage::InitTableOptions() {
 
 void Storage::SetBlobDB(rocksdb::ColumnFamilyOptions *cf_options) {
   cf_options->enable_blob_files = config_->rocks_db.enable_blob_files;
+  cf_options->blob_cache = config_->enable_blob_cache ? shared_block_cache_ : nullptr;
   cf_options->min_blob_size = config_->rocks_db.min_blob_size;
   cf_options->blob_file_size = config_->rocks_db.blob_file_size;
   cf_options->blob_compression_type = config_->rocks_db.compression;
@@ -193,7 +194,8 @@ rocksdb::Options Storage::InitRocksDBOptions() {
   options.max_total_wal_size = static_cast<uint64_t>(config_->rocks_db.max_total_wal_size * MiB);
   options.listeners.emplace_back(new EventListener(this));
   options.dump_malloc_stats = config_->rocks_db.dump_malloc_stats;
-  sst_file_manager_ = std::shared_ptr<rocksdb::SstFileManager>(rocksdb::NewSstFileManager(rocksdb::Env::Default()));
+  sst_file_manager_ = std::shared_ptr<rocksdb::SstFileManager>(rocksdb::NewSstFileManager(
+      rocksdb::Env::Default(), nullptr, "", config_->rocks_db.sst_file_delete_rate_bytes_per_sec));
   options.sst_file_manager = sst_file_manager_;
   int64_t max_io_mb = kIORateLimitMaxMb;
   if (config_->max_io_mb > 0) max_io_mb = config_->max_io_mb;
@@ -890,6 +892,11 @@ rocksdb::Status Storage::Compact(rocksdb::ColumnFamilyHandle *cf, const Slice *b
   return rocksdb::Status::OK();
 }
 
+rocksdb::Status Storage::FlushMemTable(rocksdb::ColumnFamilyHandle *cf_handle, const rocksdb::FlushOptions &options) {
+  const auto &cf_handles = cf_handle ? std::vector<rocksdb::ColumnFamilyHandle *>{cf_handle} : cf_handles_;
+  return db_->Flush(options, cf_handles);
+}
+
 uint64_t Storage::GetTotalSize(const std::string &ns) {
   if (ns == kDefaultNamespace) {
     return sst_file_manager_->GetTotalSize();
@@ -914,6 +921,10 @@ uint64_t Storage::GetTotalSize(const std::string &ns) {
   }
 
   return total_size;
+}
+
+void Storage::SetSstFileDeleteRateBytesPerSecond(int64_t delete_rate) {
+  sst_file_manager_->SetDeleteRateBytesPerSecond(delete_rate);
 }
 
 void Storage::CheckDBSizeLimit() {
