@@ -44,6 +44,7 @@
 #include "fmt/format.h"
 #include "logging.h"
 #include "redis_connection.h"
+#include "redis_reply.h"
 #include "rocksdb/version.h"
 #include "storage/compaction_checker.h"
 #include "storage/redis_db.h"
@@ -700,6 +701,63 @@ void Server::OnEntryAddedToStream(const std::string &ns, const std::string &key,
   }
 }
 
+void Server::BlockOnWait(redis::Connection *conn, rocksdb::SequenceNumber target_seq, uint64_t num_replicas) {
+  std::lock_guard<std::mutex> guard(wait_contexts_mu_);
+
+  wait_contexts_.emplace_back(conn, target_seq, num_replicas);
+  IncrBlockedClientNum();
+}
+
+void Server::WakeupWaitConnections(rocksdb::SequenceNumber seq) {
+  std::lock_guard<std::mutex> guard(wait_contexts_mu_);
+
+  for (auto it = wait_contexts_.begin(); it != wait_contexts_.end();) {
+    // Check if target sequence is reached
+    if (seq >= it->target_seq) {
+      // Count how many replicas have reached the target sequence
+      size_t reached_replicas = GetReplicasReachedSequence(it->target_seq);
+
+      // If enough replicas have reached the target sequence, wake up the connection
+      if (reached_replicas >= it->num_replicas) {
+        // Send the response with the number of replicas that have reached the target sequence
+        it->conn->Reply(redis::Integer(reached_replicas));
+
+        auto s = it->conn->Owner()->EnableWriteEvent(it->conn->GetFD());
+        if (!s.IsOK()) {
+          error("[server] Failed to enable write event on WAIT connection {}: {}", it->conn->GetFD(), s.Msg());
+        }
+        it = wait_contexts_.erase(it);
+        DecrBlockedClientNum();
+        continue;
+      }
+    }
+
+    ++it;
+  }
+}
+
+void Server::CleanupWaitConnection(redis::Connection *conn) {
+  std::lock_guard<std::mutex> guard(wait_contexts_mu_);
+
+  auto it = std::find_if(wait_contexts_.begin(), wait_contexts_.end(),
+                         [conn](const auto &context) { return context.conn == conn; });
+  if (it != wait_contexts_.end()) {
+    wait_contexts_.erase(it);
+    DecrBlockedClientNum();
+  }
+}
+
+size_t Server::GetReplicasReachedSequence(rocksdb::SequenceNumber target_seq) {
+  std::lock_guard<std::mutex> slave_guard(slave_threads_mu_);
+  size_t reached_replicas = 0;
+  for (const auto &slave : slave_threads_) {
+    if (!slave->IsStopped() && slave->GetAckSeq() >= target_seq) {
+      reached_replicas++;
+    }
+  }
+  return reached_replicas;
+}
+
 void Server::updateCachedTime() { unix_time_secs.store(util::GetTimeStamp()); }
 
 int Server::IncrClientNum() {
@@ -1060,10 +1118,10 @@ Server::InfoEntries Server::GetReplicationInfo() {
   for (const auto &slave : slave_threads_) {
     if (slave->IsStopped()) continue;
 
-    entries.emplace_back("slave" + std::to_string(idx),
-                         fmt::format("ip={},port={},offset={},lag={}", slave->GetConn()->GetAnnounceIP(),
-                                     slave->GetConn()->GetAnnouncePort(), slave->GetCurrentReplSeq(),
-                                     latest_seq - slave->GetCurrentReplSeq()));
+    entries.emplace_back(
+        "slave" + std::to_string(idx),
+        fmt::format("ip={},port={},offset={},lag={}", slave->GetConn()->GetAnnounceIP(),
+                    slave->GetConn()->GetAnnouncePort(), slave->GetAckSeq(), latest_seq - slave->GetAckSeq()));
     ++idx;
   }
   slave_threads_mu_.unlock();
@@ -1100,7 +1158,7 @@ std::string Server::GetRoleInfo() {
       list.emplace_back(redis::ArrayOfBulkStrings({
           slave->GetConn()->GetAnnounceIP(),
           std::to_string(slave->GetConn()->GetListeningPort()),
-          std::to_string(slave->GetCurrentReplSeq()),
+          std::to_string(slave->GetAckSeq()),
       }));
     }
     slave_threads_mu_.unlock();
