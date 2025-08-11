@@ -32,8 +32,8 @@
 #include <cstdlib>
 #include <functional>
 #include <iomanip>
-#include <jsoncons/json.hpp>
 #include <memory>
+#include "sonic/sonic.h"
 #include <mutex>
 #include <shared_mutex>
 #include <utility>
@@ -1408,23 +1408,33 @@ std::string Server::GetInfo(const std::string &ns, const std::vector<std::string
 }
 
 std::string Server::GetRocksDBStatsJson() const {
-  jsoncons::json stats_json;
+  sonic_json::Document stats_json;
+  stats_json.SetObject();
+  auto& allocator = stats_json.GetAllocator();
 
   auto stats = storage->GetDB()->GetDBOptions().statistics;
   for (const auto &iter : rocksdb::TickersNameMap) {
-    stats_json[iter.second] = stats->getTickerCount(iter.first);
+    stats_json.AddMember(sonic_json::StringView(iter.second), sonic_json::Node(stats->getTickerCount(iter.first)), allocator);
   }
 
   for (const auto &iter : rocksdb::HistogramsNameMap) {
     rocksdb::HistogramData hist_data;
     stats->histogramData(iter.first, &hist_data);
-    /* P50 P95 P99 P100 COUNT SUM */
-    stats_json[iter.second] =
-        jsoncons::json(jsoncons::json_array_arg, {hist_data.median, hist_data.percentile95, hist_data.percentile99,
-                                                  hist_data.max, hist_data.count, hist_data.sum});
+
+    sonic_json::Node arr(sonic_json::kArray);
+    arr.PushBack(sonic_json::Node(hist_data.median), allocator);
+    arr.PushBack(sonic_json::Node(hist_data.percentile95), allocator);
+    arr.PushBack(sonic_json::Node(hist_data.percentile99), allocator);
+    arr.PushBack(sonic_json::Node(hist_data.max), allocator);
+    arr.PushBack(sonic_json::Node(hist_data.count), allocator);
+    arr.PushBack(sonic_json::Node(hist_data.sum), allocator);
+
+    stats_json.AddMember(sonic_json::StringView(iter.second), std::move(arr), allocator);
   }
 
-  return stats_json.to_string();
+  sonic_json::WriteBuffer wb;
+  stats_json.Serialize(wb);
+  return wb.ToString();
 }
 
 // This function is called by replication thread when finished fetching all files from its master.

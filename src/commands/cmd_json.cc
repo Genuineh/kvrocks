@@ -114,7 +114,7 @@ class CommandJsonGet : public Commander {
     }
     if (!s.ok()) return {Status::RedisExecErr, s.ToString()};
 
-    *output = redis::BulkString(GET_OR_RET(result.Print(indent_size_, spaces_after_colon_, new_line_chars_)));
+    *output = redis::BulkString(result.Print(indent_size_, spaces_after_colon_, new_line_chars_).GetValue());
     return Status::OK();
   }
 
@@ -124,24 +124,6 @@ class CommandJsonGet : public Commander {
   std::string new_line_chars_;
 
   std::vector<std::string> paths_;
-};
-
-class CommandJsonInfo : public Commander {
- public:
-  Status Execute(engine::Context &ctx, Server *srv, Connection *conn, std::string *output) override {
-    redis::Json json(srv->storage, conn->GetNamespace());
-
-    auto storage_format = JsonStorageFormat::JSON;
-
-    auto s = json.Info(ctx, args_[1], &storage_format);
-    if (!s.ok()) return {Status::RedisExecErr, s.ToString()};
-
-    auto format_str = storage_format == JsonStorageFormat::JSON   ? "json"
-                      : storage_format == JsonStorageFormat::CBOR ? "cbor"
-                                                                  : "unknown";
-    output->append(conn->MultiBulkString({"storage_format", format_str}));
-    return Status::OK();
-  }
 };
 
 class CommandJsonArrAppend : public Commander {
@@ -369,7 +351,7 @@ class CommandJsonArrPop : public Commander {
     *output = redis::MultiLen(results.size());
     for (const auto &data : results) {
       if (data.has_value()) {
-        *output += redis::BulkString(GET_OR_RET(data->Print()));
+        *output += redis::BulkString(data->Print().GetValue());
       } else {
         *output += conn->NilString();
       }
@@ -521,7 +503,7 @@ class CommandJsonNumIncrBy : public Commander {
       return {Status::RedisExecErr, s.ToString()};
     }
 
-    *output = redis::BulkString(result.value.to_string());
+    *output = redis::BulkString(GET_OR_RET(result.Dump()));
 
     return Status::OK();
   }
@@ -539,7 +521,7 @@ class CommandJsonNumMultBy : public Commander {
       return {Status::RedisExecErr, s.ToString()};
     }
 
-    *output = redis::BulkString(result.value.to_string());
+    *output = redis::BulkString(GET_OR_RET(result.Dump()));
 
     return Status::OK();
   }
@@ -619,7 +601,7 @@ class CommandJsonMGet : public Commander {
 
     for (size_t i = 0; i < statuses.size(); i++) {
       if (statuses[i].ok()) {
-        values[i] = json_values[i].value.to_string();
+        values[i] = GET_OR_RET(json_values[i].Dump());
       }
     }
 
@@ -723,7 +705,6 @@ class CommandJsonResp : public Commander {
 
 REDIS_REGISTER_COMMANDS(JSON, MakeCmdAttr<CommandJsonSet>("json.set", 4, "write", 1, 1, 1),
                         MakeCmdAttr<CommandJsonGet>("json.get", -2, "read-only", 1, 1, 1),
-                        MakeCmdAttr<CommandJsonInfo>("json.info", 2, "read-only", 1, 1, 1),
                         MakeCmdAttr<CommandJsonType>("json.type", -2, "read-only", 1, 1, 1),
                         MakeCmdAttr<CommandJsonArrAppend>("json.arrappend", -4, "write", 1, 1, 1),
                         MakeCmdAttr<CommandJsonArrInsert>("json.arrinsert", -5, "write", 1, 1, 1),

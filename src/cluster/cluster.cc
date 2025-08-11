@@ -26,6 +26,7 @@
 #include <cstring>
 #include <fstream>
 #include <memory>
+#include <regex>
 #include <vector>
 
 #include "cluster/cluster_defs.h"

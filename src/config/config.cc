@@ -60,8 +60,9 @@ const std::vector<ConfigEnum<SupervisedMode>> supervised_modes{
     {"systemd", kSupervisedSystemd},
 };
 
-const std::vector<ConfigEnum<JsonStorageFormat>> json_storage_formats{{"json", JsonStorageFormat::JSON},
-                                                                      {"cbor", JsonStorageFormat::CBOR}};
+const std::vector<ConfigEnum<JsonStorageFormat>> json_storage_formats{
+    {"json", JsonStorageFormat::JSON},
+};
 
 const std::vector<ConfigEnum<rocksdb::CompressionType>> compression_types{[] {
   std::vector<ConfigEnum<rocksdb::CompressionType>> res;

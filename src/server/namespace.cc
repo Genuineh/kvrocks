@@ -20,7 +20,7 @@
 
 #include "namespace.h"
 
-#include "jsoncons/json.hpp"
+#include "sonic/sonic.h"
 
 // Error messages
 constexpr const char* kErrNamespaceExists = "the namespace already exists";
@@ -61,9 +61,19 @@ Status Namespace::loadFromDB(std::map<std::string, std::string>* db_tokens) cons
     return {Status::NotOK, s.ToString()};
   }
 
-  jsoncons::json j = jsoncons::json::parse(value);
-  for (const auto& iter : j.object_range()) {
-    db_tokens->insert({iter.key(), iter.value().as_string()});
+  sonic_json::Document doc;
+  doc.Parse(value);
+  if (doc.HasParseError()) {
+    return {Status::NotOK, "Failed to parse namespace JSON from DB"};
+  }
+  if (!doc.IsObject()) {
+    return {Status::NotOK, "Namespace data in DB is not a JSON object"};
+  }
+
+  for (auto it = doc.MemberBegin(); it != doc.MemberEnd(); ++it) {
+    if (it->value.IsString()) {
+      db_tokens->insert({std::string(it->name.GetString()), std::string(it->value.GetString())});
+    }
   }
   return Status::OK();
 }
@@ -217,10 +227,18 @@ Status Namespace::Rewrite(const std::map<std::string, std::string>& tokens) cons
   if (!config->repl_namespace_enabled) {
     return Status::OK();
   }
-  jsoncons::json json;
+
+  sonic_json::Document doc;
+  doc.SetObject();
+  auto& allocator = doc.GetAllocator();
   for (const auto& iter : tokens) {
-    json[iter.first] = iter.second;
+    doc.AddMember(sonic_json::StringView(iter.first), sonic_json::Node(iter.second, allocator), allocator);
   }
+
+  sonic_json::WriteBuffer wb;
+  doc.Serialize(wb);
+  std::string json_string = wb.ToString();
+
   engine::Context ctx(storage_);
-  return storage_->WriteToPropagateCF(ctx, kNamespaceDBKey, json.to_string());
+  return storage_->WriteToPropagateCF(ctx, kNamespaceDBKey, json_string);
 }

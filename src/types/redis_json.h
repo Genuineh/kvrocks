@@ -38,7 +38,6 @@ class Json : public Database {
                       const std::string &value);
   rocksdb::Status Get(engine::Context &ctx, const std::string &user_key, const std::vector<std::string> &paths,
                       JsonValue *result);
-  rocksdb::Status Info(engine::Context &ctx, const std::string &user_key, JsonStorageFormat *storage_format);
   rocksdb::Status Type(engine::Context &ctx, const std::string &user_key, const std::string &path,
                        std::vector<std::string> *results);
   rocksdb::Status ArrAppend(engine::Context &ctx, const std::string &user_key, const std::string &path,

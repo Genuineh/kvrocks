@@ -53,30 +53,30 @@ StatusOr<FieldValueRetriever> FieldValueRetriever::Create(IndexOnDataType type, 
     JsonValue value;
     auto s = db.read(ctx, ns_key, &metadata, &value);
     if (!s.ok()) return {s.IsNotFound() ? Status::NotFound : Status::NotOK, s.ToString()};
-    return FieldValueRetriever(value);
+    return FieldValueRetriever(std::move(value));
   } else {
     unreachable();
   }
 }
 
-StatusOr<kqir::Value> FieldValueRetriever::ParseFromJson(const jsoncons::json &val,
+StatusOr<kqir::Value> FieldValueRetriever::ParseFromJson(const sonic_json::Node &val,
                                                          const redis::IndexFieldMetadata *type) {
   if (auto numeric [[maybe_unused]] = dynamic_cast<const redis::NumericFieldMetadata *>(type)) {
-    if (!val.is_number() || val.is_string()) return {Status::NotOK, "json value cannot be string for numeric fields"};
-    return kqir::MakeValue<kqir::Numeric>(val.as_double());
+    if (!val.IsNumber() || val.IsString()) return {Status::NotOK, "json value cannot be string for numeric fields"};
+    return kqir::MakeValue<kqir::Numeric>(val.GetDouble());
   } else if (auto tag = dynamic_cast<const redis::TagFieldMetadata *>(type)) {
-    if (val.is_string()) {
+    if (val.IsString()) {
       const char delim[] = {tag->separator, '\0'};
-      auto vec = util::Split(val.as_string(), delim);
+      auto vec = util::Split(val.GetString(), delim);
       std::transform(vec.begin(), vec.end(), vec.begin(),
                      [](const std::string &s) { return util::Trim(s, util::ASCII_WHITESPACES); });
       return kqir::MakeValue<kqir::StringArray>(vec);
-    } else if (val.is_array()) {
+    } else if (val.IsArray()) {
       std::vector<std::string> strs;
-      for (size_t i = 0; i < val.size(); ++i) {
-        if (!val[i].is_string())
+      for (size_t i = 0; i < val.Size(); ++i) {
+        if (!val[i].IsString())
           return {Status::NotOK, "json value should be string or array of strings for tag fields"};
-        strs.push_back(val[i].as_string());
+        strs.push_back(val[i].GetString());
       }
       return kqir::MakeValue<kqir::StringArray>(strs);
     } else {
@@ -84,13 +84,13 @@ StatusOr<kqir::Value> FieldValueRetriever::ParseFromJson(const jsoncons::json &v
     }
   } else if (auto vector = dynamic_cast<const redis::HnswVectorFieldMetadata *>(type)) {
     const auto dim = vector->dim;
-    if (!val.is_array()) return {Status::NotOK, "json value should be array of numbers for vector fields"};
-    if (dim != val.size()) return {Status::NotOK, "the size of the json array is not equal to the dim of the vector"};
+    if (!val.IsArray()) return {Status::NotOK, "json value should be array of numbers for vector fields"};
+    if (dim != val.Size()) return {Status::NotOK, "the size of the json array is not equal to the dim of the vector"};
     std::vector<double> nums;
     for (size_t i = 0; i < dim; ++i) {
-      if (!val[i].is_number() || val[i].is_string())
+      if (!val[i].IsNumber() || val[i].IsString())
         return {Status::NotOK, "json value should be array of numbers for vector fields"};
-      nums.push_back(val[i].as_double());
+      nums.push_back(val[i].GetDouble());
     }
     return kqir::MakeValue<kqir::NumericArray>(nums);
   } else {
@@ -139,15 +139,16 @@ StatusOr<kqir::Value> FieldValueRetriever::Retrieve(engine::Context &ctx, std::s
 
     return ParseFromHash(value, type);
   } else if (std::holds_alternative<JsonData>(db)) {
-    auto &value = std::get<JsonData>(db);
+    [[maybe_unused]] auto &value = std::get<JsonData>(db);
 
-    auto s = value.Get(field.front() == '$' ? field : fmt::format("$.{}", field));
-    if (!s.IsOK()) return {Status::NotOK, s.Msg()};
-    if (s->value.size() != 1)
-      return {Status::NotFound, "json value specified by the field (json path) should exist and be unique"};
-    auto val = s->value[0];
+    // auto s = value.Get(field.front() == '$' ? field : fmt::format("$.{}", field));
+    // if (!s.IsOK()) return {Status::NotOK, s.Msg()};
+    // if (s->value.size() != 1)
+    //   return {Status::NotFound, "json value specified by the field (json path) should exist and be unique"};
+    // auto val = s->value[0];
 
-    return ParseFromJson(val, type);
+    // return ParseFromJson(val, type);
+    return {Status::NotOK, "not implemented"};
   } else {
     return {Status::NotOK, "unknown redis data type to retrieve"};
   }
