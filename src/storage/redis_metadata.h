@@ -308,15 +308,10 @@ class BloomChainMetadata : public Metadata {
 
 enum class JsonStorageFormat : uint8_t {
   JSON = 0,
-  CBOR = 1,
 };
 
 class JsonMetadata : public Metadata {
  public:
-  // to make JSON type more extensible,
-  // we add a field to indicate the format of stored data
-  JsonStorageFormat format = JsonStorageFormat::JSON;
-
   explicit JsonMetadata(bool generate_version = true) : Metadata(kRedisJson, generate_version) {}
 
   void Encode(std::string *dst) const override;

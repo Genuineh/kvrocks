@@ -462,17 +462,11 @@ uint32_t BloomChainMetadata::GetCapacity() const {
 
 void JsonMetadata::Encode(std::string *dst) const {
   Metadata::Encode(dst);
-
-  PutFixed8(dst, uint8_t(format));
 }
 
 rocksdb::Status JsonMetadata::Decode(Slice *input) {
   if (auto s = Metadata::Decode(input); !s.ok()) {
     return s;
-  }
-
-  if (!GetFixed8(input, reinterpret_cast<uint8_t *>(&format))) {
-    return rocksdb::Status::InvalidArgument(kErrMetadataTooShort);
   }
 
   return rocksdb::Status::OK();

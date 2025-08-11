@@ -34,20 +34,10 @@ rocksdb::Status Json::write(engine::Context &ctx, Slice ns_key, JsonMetadata *me
   auto s = batch->PutLogData(log_data.Encode());
   if (!s.ok()) return s;
 
-  auto format = storage_->GetConfig()->json_storage_format;
-  metadata->format = format;
-
   std::string val;
   metadata->Encode(&val);
 
-  Status redis_status;
-  if (format == JsonStorageFormat::JSON) {
-    redis_status = json_val.Dump(&val, storage_->GetConfig()->json_max_nesting_depth);
-  } else if (format == JsonStorageFormat::CBOR) {
-    redis_status = json_val.DumpCBOR(&val, storage_->GetConfig()->json_max_nesting_depth);
-  } else {
-    return rocksdb::Status::InvalidArgument("JSON storage format not supported");
-  }
+  Status redis_status = json_val.Dump(&val, storage_->GetConfig()->json_max_nesting_depth);
   if (!redis_status) {
     return rocksdb::Status::InvalidArgument("Failed to encode JSON into storage: " + redis_status.Msg());
   }
@@ -58,18 +48,10 @@ rocksdb::Status Json::write(engine::Context &ctx, Slice ns_key, JsonMetadata *me
   return storage_->Write(ctx, storage_->DefaultWriteOptions(), batch->GetWriteBatch());
 }
 
-rocksdb::Status Json::parse(const JsonMetadata &metadata, const Slice &json_bytes, JsonValue *value) {
-  if (metadata.format == JsonStorageFormat::JSON) {
-    auto res = JsonValue::FromString(json_bytes.ToStringView());
-    if (!res) return rocksdb::Status::Corruption(res.Msg());
-    *value = *std::move(res);
-  } else if (metadata.format == JsonStorageFormat::CBOR) {
-    auto res = JsonValue::FromCBOR(json_bytes.ToStringView());
-    if (!res) return rocksdb::Status::Corruption(res.Msg());
-    *value = *std::move(res);
-  } else {
-    return rocksdb::Status::NotSupported("JSON storage format not supported");
-  }
+rocksdb::Status Json::parse([[maybe_unused]] const JsonMetadata &metadata, const Slice &json_bytes, JsonValue *value) {
+  auto res = JsonValue::FromString(json_bytes.ToStringView());
+  if (!res) return rocksdb::Status::Corruption(res.Msg());
+  *value = *std::move(res);
 
   return rocksdb::Status::OK();
 }
@@ -103,21 +85,6 @@ rocksdb::Status Json::del(engine::Context &ctx, const Slice &ns_key) {
   if (!s.ok()) return s;
 
   return storage_->Write(ctx, storage_->DefaultWriteOptions(), batch->GetWriteBatch());
-}
-
-rocksdb::Status Json::Info(engine::Context &ctx, const std::string &user_key, JsonStorageFormat *storage_format) {
-  auto ns_key = AppendNamespacePrefix(user_key);
-
-  std::string bytes;
-  Slice rest;
-  JsonMetadata metadata;
-
-  auto s = GetMetadata(ctx, {kRedisJson}, ns_key, &bytes, &metadata, &rest);
-  if (!s.ok()) return s;
-
-  *storage_format = metadata.format;
-
-  return rocksdb::Status::OK();
 }
 
 rocksdb::Status Json::Set(engine::Context &ctx, const std::string &user_key, const std::string &path,
@@ -155,73 +122,66 @@ rocksdb::Status Json::Get(engine::Context &ctx, const std::string &user_key, con
   auto s = read(ctx, ns_key, &metadata, &json_val);
   if (!s.ok()) return s;
 
-  JsonValue res;
-
   if (paths.empty()) {
-    res = std::move(json_val);
-  } else if (paths.size() == 1) {
+    // No path specified, return the whole document.
+    *result = std::move(json_val);
+    return rocksdb::Status::OK();
+  }
+
+  if (paths.size() == 1) {
     auto get_res = json_val.Get(paths[0]);
-    if (!get_res) return rocksdb::Status::InvalidArgument(get_res.Msg());
-    res = *std::move(get_res);
-  } else {
-    for (const auto &path : paths) {
-      auto get_res = json_val.Get(path);
-      if (!get_res) return rocksdb::Status::InvalidArgument(get_res.Msg());
-      res.value.insert_or_assign(path, std::move(get_res->value));
+    if (!get_res.IsOK()) {
+      if (get_res.ToStatus().GetCode() == Status::NotFound) return rocksdb::Status::NotFound();
+      return rocksdb::Status::InvalidArgument(get_res.ToStatus().Msg());
+    }
+    *result = *std::move(get_res);
+    return rocksdb::Status::OK();
+  }
+
+  // Multiple paths
+  result->value.SetObject();
+  auto &allocator = result->value.GetAllocator();
+  for (const auto &path : paths) {
+    auto get_res = json_val.Get(path);
+    if (get_res.IsOK()) {
+      result->value.AddMember(sonic_json::StringView(path.data(), path.size()), std::move(get_res->value), allocator);
+    } else {
+      // For multiple paths, if a path doesn't exist, it should return null.
+      result->value.AddMember(sonic_json::StringView(path.data(), path.size()), sonic_json::Node(), allocator);
     }
   }
 
-  *result = std::move(res);
   return rocksdb::Status::OK();
 }
 
 rocksdb::Status Json::ArrAppend(engine::Context &ctx, const std::string &user_key, const std::string &path,
                                 const std::vector<std::string> &values, Optionals<size_t> *results) {
+  if (path != "$") return rocksdb::Status::NotSupported("sonic-cpp does not support jsonpath yet");
+
   auto ns_key = AppendNamespacePrefix(user_key);
 
-  std::vector<jsoncons::json> append_values;
-  append_values.reserve(values.size());
-  for (auto &v : values) {
-    auto value_res = JsonValue::FromString(v, storage_->GetConfig()->json_max_nesting_depth);
-    if (!value_res) return rocksdb::Status::InvalidArgument(value_res.Msg());
-    auto value = *std::move(value_res);
-    append_values.emplace_back(std::move(value.value));
+  JsonMetadata metadata;
+  JsonValue value;
+  auto s = read(ctx, ns_key, &metadata, &value);
+  if (!s.ok()) return s;
+
+  if (!value.value.IsArray()) {
+    return rocksdb::Status::InvalidArgument("the target is not an array");
   }
 
-  JsonMetadata metadata;
-  JsonValue value;
-  auto s = read(ctx, ns_key, &metadata, &value);
-  if (!s.ok()) return s;
+  auto &allocator = value.value.GetAllocator();
+  for (auto &v : values) {
+    sonic_json::Document new_doc;
+    new_doc.Parse(v);
+    if (new_doc.HasParseError()) {
+      return rocksdb::Status::InvalidArgument("invalid json format");
+    }
+    value.value.PushBack(std::move(new_doc), allocator);
+  }
 
-  auto append_res = value.ArrAppend(path, append_values);
-  if (!append_res) return rocksdb::Status::InvalidArgument(append_res.Msg());
-  *results = std::move(*append_res);
-
-  bool is_write =
-      std::any_of(results->begin(), results->end(), [](std::optional<uint64_t> c) { return c.has_value(); });
-  if (!is_write) return rocksdb::Status::OK();
+  results->emplace_back(value.value.Size());
 
   return write(ctx, ns_key, &metadata, value);
-}
-
-rocksdb::Status Json::ArrIndex(engine::Context &ctx, const std::string &user_key, const std::string &path,
-                               const std::string &needle, ssize_t start, ssize_t end, Optionals<ssize_t> *results) {
-  auto ns_key = AppendNamespacePrefix(user_key);
-
-  auto needle_res = JsonValue::FromString(needle, storage_->GetConfig()->json_max_nesting_depth);
-  if (!needle_res) return rocksdb::Status::InvalidArgument(needle_res.Msg());
-  auto needle_value = *std::move(needle_res);
-
-  JsonMetadata metadata;
-  JsonValue value;
-  auto s = read(ctx, ns_key, &metadata, &value);
-  if (!s.ok()) return s;
-
-  auto index_res = value.ArrIndex(path, needle_value.value, start, end);
-  if (!index_res) return rocksdb::Status::InvalidArgument(index_res.Msg());
-
-  *results = std::move(*index_res);
-  return rocksdb::Status::OK();
 }
 
 rocksdb::Status Json::Type(engine::Context &ctx, const std::string &user_key, const std::string &path,
@@ -306,31 +266,32 @@ rocksdb::Status Json::ArrLen(engine::Context &ctx, const std::string &user_key, 
 }
 
 rocksdb::Status Json::ArrInsert(engine::Context &ctx, const std::string &user_key, const std::string &path,
-                                const int64_t &index, const std::vector<std::string> &values,
+                                [[maybe_unused]] const int64_t &index, const std::vector<std::string> &values,
                                 Optionals<uint64_t> *results) {
+  if (path != "$") return rocksdb::Status::NotSupported("sonic-cpp does not support jsonpath yet");
   auto ns_key = AppendNamespacePrefix(user_key);
-
-  std::vector<jsoncons::json> insert_values;
-  insert_values.reserve(values.size());
-  for (auto &v : values) {
-    auto value_res = JsonValue::FromString(v, storage_->GetConfig()->json_max_nesting_depth);
-    if (!value_res) return rocksdb::Status::InvalidArgument(value_res.Msg());
-    auto value = *std::move(value_res);
-    insert_values.emplace_back(std::move(value.value));
-  }
 
   JsonMetadata metadata;
   JsonValue value;
   auto s = read(ctx, ns_key, &metadata, &value);
   if (!s.ok()) return s;
 
-  auto insert_res = value.ArrInsert(path, index, insert_values);
-  if (!insert_res) return rocksdb::Status::InvalidArgument(insert_res.Msg());
-  *results = std::move(*insert_res);
+  if (!value.value.IsArray()) {
+    return rocksdb::Status::InvalidArgument("the target is not an array");
+  }
 
-  bool is_write =
-      std::any_of(results->begin(), results->end(), [](std::optional<uint64_t> c) { return c.has_value(); });
-  if (!is_write) return rocksdb::Status::OK();
+  [[maybe_unused]] auto &allocator = value.value.GetAllocator();
+  for (auto &v : values) {
+    sonic_json::Document new_doc;
+    new_doc.Parse(v);
+    if (new_doc.HasParseError()) {
+      return rocksdb::Status::InvalidArgument("invalid json format");
+    }
+    // TODO: sonic-cpp does not support insert yet.
+    // value.value.Insert(index, new_doc, allocator);
+  }
+
+  results->emplace_back(value.value.Size());
 
   return write(ctx, ns_key, &metadata, value);
 }
@@ -362,9 +323,9 @@ rocksdb::Status Json::ArrPop(engine::Context &ctx, const std::string &user_key, 
 
   auto pop_res = json_val.ArrPop(path, index);
   if (!pop_res) return rocksdb::Status::InvalidArgument(pop_res.Msg());
-  *results = *pop_res;
+  *results = std::move(*pop_res);
 
-  bool is_write = std::any_of(pop_res->begin(), pop_res->end(),
+  bool is_write = std::any_of(results->begin(), results->end(),
                               [](const std::optional<JsonValue> &val) { return val.has_value(); });
   if (!is_write) return rocksdb::Status::OK();
 
@@ -446,10 +407,10 @@ rocksdb::Status Json::NumMultBy(engine::Context &ctx, const std::string &user_ke
 rocksdb::Status Json::numop(engine::Context &ctx, JsonValue::NumOpEnum op, const std::string &user_key,
                             const std::string &path, const std::string &value, JsonValue *result) {
   auto number_res = JsonValue::FromString(value);
-  if (!number_res || !number_res.GetValue().value.is_number() || number_res.GetValue().value.is_string()) {
+  if (!number_res || !number_res->value.IsNumber() || number_res->value.IsString()) {
     return rocksdb::Status::InvalidArgument("the input value should be a number");
   }
-  JsonValue number = std::move(number_res.GetValue());
+  JsonValue number = std::move(*number_res);
 
   auto ns_key = AppendNamespacePrefix(user_key);
   JsonMetadata metadata;
@@ -536,8 +497,8 @@ std::vector<rocksdb::Status> Json::MGet(engine::Context &ctx, const std::vector<
     }
     auto res = json_vals[i].Get(path);
 
-    if (!res) {
-      statuses[i] = rocksdb::Status::Corruption(res.Msg());
+    if (!res.IsOK()) {
+      statuses[i] = rocksdb::Status::Corruption(res.ToStatus().Msg());
     } else {
       results[i] = *std::move(res);
     }
@@ -573,7 +534,8 @@ rocksdb::Status Json::MSet(engine::Context &ctx, const std::vector<std::string> 
 
     // If a key has been modified before, just read from memory to find the modified value.
     if (dirty_keys.count(ns_keys[i])) {
-      value = dirty_keys[ns_keys[i]].first;
+      value = std::move(dirty_keys[ns_keys[i]].first);
+      dirty_keys.erase(ns_keys[i]);
       auto set_res = value.Set(paths[i], *std::move(json_res));
       if (!set_res) return rocksdb::Status::InvalidArgument(set_res.Msg());
     } else {
@@ -588,25 +550,16 @@ rocksdb::Status Json::MSet(engine::Context &ctx, const std::vector<std::string> 
       }
     }
 
-    dirty_keys[ns_keys[i]] = std::make_pair(value, metadata);
+    dirty_keys[ns_keys[i]] = std::make_pair(std::move(value), metadata);
   }
 
   for (auto &[ns_key, updated_object] : dirty_keys) {
     auto &[value, metadata] = updated_object;
-    auto format = storage_->GetConfig()->json_storage_format;
-    metadata.format = format;
 
     std::string val;
     metadata.Encode(&val);
 
-    Status res;
-    if (format == JsonStorageFormat::JSON) {
-      res = value.Dump(&val, storage_->GetConfig()->json_max_nesting_depth);
-    } else if (format == JsonStorageFormat::CBOR) {
-      res = value.DumpCBOR(&val, storage_->GetConfig()->json_max_nesting_depth);
-    } else {
-      return rocksdb::Status::InvalidArgument("JSON storage format not supported");
-    }
+    Status res = value.Dump(&val, storage_->GetConfig()->json_max_nesting_depth);
     if (!res) {
       return rocksdb::Status::InvalidArgument("Failed to encode JSON into storage: " + res.Msg());
     }
@@ -650,12 +603,7 @@ rocksdb::Status Json::DebugMemory(engine::Context &ctx, const std::string &user_
     if (!s.ok()) return s;
     results->emplace_back(rest.size());
   } else {
-    JsonValue json_val;
-    auto s = read(ctx, ns_key, &metadata, &json_val);
-    if (!s.ok()) return s;
-    auto str_bytes = json_val.GetBytes(path, metadata.format, storage_->GetConfig()->json_max_nesting_depth);
-    if (!str_bytes) return rocksdb::Status::InvalidArgument(str_bytes.Msg());
-    *results = std::move(*str_bytes);
+    return rocksdb::Status::NotSupported("DEBUG MEMORY is not supported for json path");
   }
   return rocksdb::Status::OK();
 }
@@ -680,6 +628,13 @@ rocksdb::Status Json::FromRawString(std::string_view value, JsonValue *result) {
   auto s = ParseMetadata({kRedisJson}, &rest, &metadata);
   if (!s.ok()) return s;
   return parse(metadata, rest, result);
+}
+
+rocksdb::Status Json::ArrIndex([[maybe_unused]] engine::Context &ctx, [[maybe_unused]] const std::string &user_key,
+                               [[maybe_unused]] const std::string &path, [[maybe_unused]] const std::string &needle,
+                               [[maybe_unused]] ssize_t start, [[maybe_unused]] ssize_t end,
+                               [[maybe_unused]] Optionals<ssize_t> *results) {
+  return rocksdb::Status::NotSupported("not implemented");
 }
 
 }  // namespace redis

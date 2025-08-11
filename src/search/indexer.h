@@ -62,11 +62,11 @@ struct FieldValueRetriever {
   explicit FieldValueRetriever(Hash hash, HashMetadata metadata, std::string_view key)
       : db(std::in_place_type<HashData>, std::move(hash), std::move(metadata), key) {}
 
-  explicit FieldValueRetriever(JsonValue json) : db(std::in_place_type<JsonData>, std::move(json)) {}
+  explicit FieldValueRetriever(JsonValue &&json) : db(std::in_place_type<JsonData>, std::move(json)) {}
 
   StatusOr<kqir::Value> Retrieve(engine::Context &ctx, std::string_view field, const redis::IndexFieldMetadata *type);
 
-  static StatusOr<kqir::Value> ParseFromJson(const jsoncons::json &value, const redis::IndexFieldMetadata *type);
+  static StatusOr<kqir::Value> ParseFromJson(const sonic_json::Node &value, const redis::IndexFieldMetadata *type);
   static StatusOr<kqir::Value> ParseFromHash(const std::string &value, const redis::IndexFieldMetadata *type);
 };
 
